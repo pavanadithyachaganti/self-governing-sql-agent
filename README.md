@@ -2,7 +2,7 @@
 
 An agent that turns natural language questions into safe, auditable queries over operational data. Framework-free, with SQL guardrails and human-in-the-loop review for anything destructive or ambiguous.
 
-> **Status: Week 2.** The multi-step orchestrator, guardrail safety layer, human-in-the-loop review, and per-step trace are working end to end on top of the Week 1 dataset and memory. See [Roadmap](#roadmap).
+> **Status: ** The multi-step orchestrator, guardrail safety layer, human-in-the-loop review, and per-step trace are working end to end on top of the dataset and memory.
 
 ## What this is
 
@@ -153,11 +153,6 @@ backend/
 | `POST /api/eval` | run the guardrail + routing regression suite, return the scored report |
 | `GET /api/health` | active LLM provider and current guardrail thresholds |
 
-## Roadmap
-
-- **Week 1 (done).** Synthetic dataset, naive text-to-SQL loop, append-only memory.
-- **Week 2 (done).** Multi-step orchestrator (plan → guardrail → human review → execute → repair → summarize → verify). Safety + confidentiality guardrails with named rules and reasons, including an aggregate-vs-row-level PII policy and an early planner gate. Human-in-the-loop review (approve / reject / modify) feeding a decision log. Grounded result summarization with a faithfulness check. Per-step trace observability. A regression eval suite. Single-page UI with an Ask view and a decision-log dashboard.
-- **Week 3.** Deploy to Render + Vercel, role-based access policy (different roles see different columns), memory summarization for long conversations, public writeup alongside the RAG repo.
 
 ## What this demonstrates
 
