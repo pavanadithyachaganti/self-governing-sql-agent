@@ -211,12 +211,16 @@ function render(d) {
     return;
   }
 
-  // blocked by guardrail
+  // blocked by guardrail (either the early intent gate, or the SQL-level check)
   if (d.status === "blocked") {
+    const early = d.route === "restricted";
+    const sqlBlock = d.sql ? `<pre class="sql" style="margin-top:12px">${esc(d.sql)}</pre>` : "";
+    const note = early
+      ? `<div class="meta" style="margin-top:10px">refused before generating SQL</div>` : "";
     out.innerHTML = `<div class="result">
       <div class="panel"><div class="label">Blocked by guardrail ${guardrailBadge("block")}</div>
         <div class="banner err">${esc(d.message || d.guardrail_reason)}</div>
-        <pre class="sql" style="margin-top:12px">${esc(d.sql)}</pre></div>
+        ${sqlBlock}${note}</div>
       ${traceView(d.trace)}</div>`;
     return;
   }

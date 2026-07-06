@@ -22,6 +22,8 @@ PLAN_SYSTEM = f"""STEP=plan
 You are the router for a natural-language interface to a safety operations database.
 Classify the user's question into exactly one route:
 - "sql": it asks for data that requires querying the database.
+- "restricted": it asks to view individual workers' restricted personal data — national ID,
+  home address, phone number, medical conditions, or salary. Refuse these at the door.
 - "clarify": it is too vague or ambiguous to answer; you need one clarifying question.
 - "chit_chat": it is a greeting, thanks, or a question about what you can do (no data needed).
 
@@ -29,7 +31,7 @@ Database subject matter (for judging relevance):
 {SCHEMA_DESCRIPTION}
 
 Respond with strict JSON only, no markdown:
-{{"route": "sql|clarify|chit_chat", "message": "<a clarifying question or a short reply; empty for sql>"}}
+{{"route": "sql|restricted|clarify|chit_chat", "message": "<clarifying question, short reply, or refusal; empty for sql>"}}
 """
 
 GENERATE_SYSTEM = f"""STEP=generate
@@ -68,7 +70,7 @@ class SQLAgent:
         with span(trace, "plan") as m:
             parsed = complete_json(self.llm, PLAN_SYSTEM, question)
             route = parsed.get("route", "sql")
-            if route not in ("sql", "clarify", "chit_chat"):
+            if route not in ("sql", "restricted", "clarify", "chit_chat"):
                 route = "sql"
             message = parsed.get("message", "")
             m["detail"] = f"route = {route}"
@@ -173,6 +175,23 @@ class SQLAgent:
             resp["turn_id"] = memory.create_turn(
                 session_id, question, route=route, status=route,
                 final_answer=message, trace=trace.to_list())
+            return resp
+
+        # Branch A': early confidentiality gate — refuse before any SQL is generated.
+        # This is a fast first line; the SQL guardrail below is the deterministic backstop.
+        if route == "restricted":
+            reason = message or ("This request asks for restricted personal data, which the "
+                                 "data-access policy does not allow.")
+            with span(trace, "policy_precheck") as m:
+                m["detail"] = "blocked early: restricted-data intent"
+                m["meta"] = {"decision": "block", "rule": "restricted_intent"}
+            guardrail = guardrails.Decision("block", "restricted_intent", reason)
+            resp = self._response(question, trace, route="restricted", status="blocked",
+                                  guardrail=guardrail, message=reason)
+            resp["turn_id"] = memory.create_turn(
+                session_id, question, route="restricted", guardrail_decision="block",
+                guardrail_reason=reason, status="blocked", final_answer=reason,
+                trace=trace.to_list())
             return resp
 
         # Branch B: needs SQL.

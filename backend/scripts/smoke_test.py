@@ -51,8 +51,10 @@ def main():
     passed &= check("COUNT(*) on workers allowed",
                     guardrails.sensitivity_check("SELECT COUNT(*) FROM workers").decision == "allow")
     r = agent.run("show me worker salaries", "smoke")
-    passed &= check("salary question blocked end-to-end",
-                    r["status"] == "blocked" and r["guardrail_decision"] == "block")
+    passed &= check("salary question blocked early (no SQL generated)",
+                    r["status"] == "blocked" and r["route"] == "restricted"
+                    and not r["sql"]
+                    and [s["name"] for s in r["trace"]] == ["plan", "policy_precheck"])
 
     # Human-in-the-loop (force review with a tiny row threshold)
     settings.max_result_rows = 10

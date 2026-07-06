@@ -86,6 +86,12 @@ class MockProvider:
             return json.dumps({"route": "chit_chat",
                                "message": "I answer questions about the safety operations database. "
                                           "Try asking about incidents, worker vitals, or site productivity."})
+        if any(p in q for p in ["salary", "salaries", "wage", "pay ", " pay", "national id", "emirates id",
+                                "passport", "home address", "phone", "medical", "health condition"]):
+            return json.dumps({"route": "restricted",
+                               "message": "That request asks for restricted personal data "
+                                          "(such as salary, national ID, contact details, or medical "
+                                          "information), which the data-access policy does not allow."})
         if len(q.split()) <= 2:
             return json.dumps({"route": "clarify",
                                "message": "Could you say a bit more about what you'd like to know?"})
