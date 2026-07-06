@@ -41,6 +41,19 @@ def main():
     passed &= check("multi-statement blocked",
                     guardrails.static_check("SELECT 1; DROP TABLE x", settings.max_joins).decision == "block")
 
+    # Confidentiality (restricted PII)
+    passed &= check("restricted column blocked",
+                    guardrails.sensitivity_check("SELECT national_id FROM workers").decision == "block")
+    passed &= check("SELECT * on workers blocked",
+                    guardrails.sensitivity_check("SELECT * FROM workers").decision == "block")
+    passed &= check("non-sensitive worker columns allowed",
+                    guardrails.sensitivity_check("SELECT full_name, role FROM workers").decision == "allow")
+    passed &= check("COUNT(*) on workers allowed",
+                    guardrails.sensitivity_check("SELECT COUNT(*) FROM workers").decision == "allow")
+    r = agent.run("show me worker salaries", "smoke")
+    passed &= check("salary question blocked end-to-end",
+                    r["status"] == "blocked" and r["guardrail_decision"] == "block")
+
     # Human-in-the-loop (force review with a tiny row threshold)
     settings.max_result_rows = 10
     r = agent.run("List all open or unresolved incidents", "smoke")

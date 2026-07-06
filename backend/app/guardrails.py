@@ -22,6 +22,14 @@ _LEADING_SELECT = re.compile(r"^\s*(select|with)\b", re.I)
 _JOIN = re.compile(r"\bjoin\b", re.I)
 _HAS_LIMIT = re.compile(r"\blimit\b", re.I)
 
+# Restricted PII columns in the `workers` table. A query is blocked if it names
+# any of these, or if it uses SELECT * / alias.* in a way that would expose them
+# (i.e. selects all columns while the workers table is in play).
+_RESTRICTED_COLUMNS = ("national_id", "home_address", "phone",
+                       "medical_conditions", "monthly_salary_aed")
+_SELECT_STAR = re.compile(r"select\s+\*|\b\w+\.\*", re.I)   # "SELECT *" or "w.*" (not COUNT(*))
+_WORKERS_TABLE = re.compile(r"\bworkers\b", re.I)
+
 
 @dataclass
 class Decision:
@@ -58,6 +66,27 @@ def static_check(sql: str, max_joins: int) -> Decision:
                         f"needs review before running.")
 
     return Decision("allow", "passed", "Passed all structural safety checks.")
+
+
+def sensitivity_check(sql: str) -> Decision:
+    """Confidentiality guardrail: refuse to expose restricted PII columns from
+    the workers table. Catches both direct references (SELECT national_id ...)
+    and blanket SELECT * that would sweep the columns in indirectly."""
+    lowered = (sql or "").lower()
+
+    named = [c for c in _RESTRICTED_COLUMNS if re.search(rf"\b{c}\b", lowered)]
+    if named:
+        shown = ", ".join(named)
+        return Decision("block", "restricted_pii",
+                        f"Query accesses restricted personal data ({shown}); blocked by the "
+                        f"data-access policy.")
+
+    if _WORKERS_TABLE.search(lowered) and _SELECT_STAR.search(lowered):
+        return Decision("block", "restricted_pii",
+                        "Query selects all columns from the workers table, which would expose "
+                        "restricted personal data; blocked by the data-access policy.")
+
+    return Decision("allow", "no_pii", "No restricted columns accessed.")
 
 
 def size_check(row_estimate, max_result_rows: int, sql: str) -> Decision:

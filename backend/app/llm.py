@@ -43,6 +43,12 @@ _MOCK_RULES = [
     (re.compile(r"near miss", re.I),
      "SELECT site_id, SUM(near_misses) AS total_near_misses FROM operational_metrics "
      "GROUP BY site_id ORDER BY total_near_misses DESC;"),
+    (re.compile(r"salary|salaries|pay|wage", re.I),
+     "SELECT worker_id, full_name, monthly_salary_aed FROM workers ORDER BY monthly_salary_aed DESC;"),
+    (re.compile(r"national id|emirates id|passport|address|phone|medical|health condition", re.I),
+     "SELECT worker_id, full_name, national_id, home_address, phone, medical_conditions FROM workers;"),
+    (re.compile(r"\bworkers?\b|personnel|directory|roster", re.I),
+     "SELECT * FROM workers;"),
     (re.compile(r"site|location", re.I),
      "SELECT site_id, COUNT(*) AS incidents FROM safety_incidents GROUP BY site_id ORDER BY incidents DESC;"),
 ]

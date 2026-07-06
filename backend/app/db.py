@@ -31,6 +31,18 @@ Table operational_metrics (one row per site per day):
   near_misses INTEGER
   productivity_index REAL -- 0.0 to 1.0
   PRIMARY KEY (site_id, date)
+
+Table workers (one row per worker; personnel directory):
+  worker_id TEXT PRIMARY KEY  -- FK to safety_incidents.worker_id and worker_vitals.worker_id
+  full_name TEXT
+  role TEXT              -- e.g. operator, technician, supervisor, engineer
+  site_id TEXT
+  hire_date TEXT         -- ISO date
+  national_id TEXT       -- restricted personal data
+  home_address TEXT      -- restricted personal data
+  phone TEXT             -- restricted personal data
+  medical_conditions TEXT -- restricted personal data
+  monthly_salary_aed INTEGER -- restricted personal data
 """.strip()
 
 

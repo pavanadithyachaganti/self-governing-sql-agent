@@ -16,8 +16,8 @@ question
       ├─ clarify / chit_chat → answer directly, no database access
       └─ sql
           → generate      LLM writes a single SELECT (with recent history as context)
-          → guardrail     static safety checks + result-size estimate
-              ├─ block   → refuse (destructive / non-SELECT / multi-statement), never runs
+          → guardrail     safety + confidentiality checks + result-size estimate
+              ├─ block   → refuse (destructive, or exposes restricted PII), never runs
               ├─ review  → PAUSE, hand the SQL to a human (approve / reject / modify)
               └─ allow   → execute
           → execute       run read-only against SQLite
@@ -32,8 +32,11 @@ The **guardrail `review` branch is the human-in-the-loop checkpoint.** A flagged
 | --- | --- | --- |
 | `non_select` / `destructive_keyword` | block | anything that isn't a read-only SELECT (DROP, DELETE, UPDATE, INSERT, ALTER, TRUNCATE…) |
 | `multiple_statements` | block | more than one statement (blocks `; DROP …` injection) |
+| `restricted_pii` | block | query touches a restricted `workers` column (national_id, home_address, phone, medical_conditions, monthly_salary_aed), including a blanket `SELECT *` that would expose them |
 | `join_complexity` | review | more JOINs than `MAX_JOINS` (default 2) |
 | `large_result` | review | estimated rows over `MAX_RESULT_ROWS` (default 200) with no LIMIT |
+
+The three block rules cover three distinct risks: **safety** (don't mutate data), **confidentiality** (don't leak personal data), and injection (one statement only). The confidentiality rule is deterministic — it does not rely on the model choosing to refuse. When the model *does* write a query for restricted columns, the guardrail catches it and names the offending fields.
 
 Every decision and every human choice is written to the SQLite memory log, so the conversation history doubles as an audit trail.
 
@@ -41,15 +44,18 @@ Runs with zero API keys: a keyword-matched mock provider exercises the full pipe
 
 ## Dataset
 
-Synthetic, generated with Faker (`backend/scripts/generate_data.py`), persisted to SQLite at `backend/data/operations.db`. ~6,900 rows across three tables, covering 6 sites and 120 workers over a 180-day window.
+Synthetic, generated with Faker (`backend/scripts/generate_data.py`), persisted to SQLite at `backend/data/operations.db`. ~7,000 rows across four tables, covering 6 sites and 120 workers over a 180-day window.
 
 | Table | Rows | Grain |
 | --- | --- | --- |
 | `safety_incidents` | ~750 | one row per reported incident |
 | `worker_vitals` | ~5,100 | one row per sensor reading |
 | `operational_metrics` | 1,080 | one row per site per day |
+| `workers` | 120 | one row per worker — personnel directory, contains restricted PII |
 
 Distributions are hand-tuned, not uniform: severity is skewed toward `low` (~55%) with `critical` rare (~3%); incident resolution status depends on how old the incident is (recent incidents skew `open`/`in_progress`, older ones skew `resolved`/`closed`); heart rate and body temperature are correlated with `activity_level`, with occasional heat-stress outliers; and `productivity_index` is negatively correlated with `incidents_reported` and `near_misses` for the same site-day.
+
+The `workers` table deliberately mixes routine fields (`full_name`, `role`, `hire_date`) with **restricted personal data** (`national_id`, `home_address`, `phone`, `medical_conditions`, `monthly_salary_aed`). These sensitive columns exist specifically so the confidentiality guardrail has something to protect — asking for worker salaries or medical conditions is refused, while asking for role counts or hire dates runs normally.
 
 Regenerate it any time:
 
@@ -141,6 +147,6 @@ backend/
 
 ## What this demonstrates
 
-Multi-step agent orchestration, a SQL safety layer, human-in-the-loop control flow, execution tracing, provider abstraction, conversation memory as an audit trail, and synthetic dataset generation with realistic distributions — built without a framework doing the thinking.
+Multi-step agent orchestration, a SQL safety and confidentiality layer, human-in-the-loop control flow, execution tracing, provider abstraction, conversation memory as an audit trail, and synthetic dataset generation with realistic distributions — built without a framework doing the thinking.
 
 Built by Pavan Adithya Chaganti · [LinkedIn](https://www.linkedin.com/in/pavan-adithya-chaganti-763840214)

@@ -38,6 +38,13 @@ INCIDENT_TYPES = [
 SEVERITIES = [("low", 0.55), ("medium", 0.30), ("high", 0.12), ("critical", 0.03)]
 ACTIVITY_LEVELS = [("resting", 0.25), ("light", 0.35), ("moderate", 0.28), ("vigorous", 0.12)]
 
+ROLES = ["operator", "technician", "supervisor", "engineer", "laborer", "inspector", "driver"]
+# Weighted toward "none" so most workers have no flagged condition.
+MEDICAL_CONDITIONS = [
+    ("none", 0.62), ("hypertension", 0.10), ("asthma", 0.08), ("diabetes", 0.07),
+    ("back injury", 0.06), ("heart condition", 0.04), ("vision impairment", 0.03),
+]
+
 INCIDENT_DESCRIPTIONS = {
     "slip_trip_fall": "Worker slipped on {surface} near {area}.",
     "equipment_malfunction": "{equipment} malfunctioned during routine operation in {area}.",
@@ -73,13 +80,28 @@ def make_sites():
 
 
 def make_workers(sites):
+    """Each worker carries both operational fields (used by vitals/incidents) and
+    personal fields. The personal fields — national_id, home_address, phone,
+    medical_conditions, monthly_salary_aed — are the restricted PII the
+    confidentiality guardrail protects."""
     workers = []
     for i in range(N_WORKERS):
         site = random.choice(sites)
+        hire = random_datetime_in_range(datetime(2018, 1, 1), datetime(2026, 1, 1))
         workers.append({
             "worker_id": f"W-{i+1:04d}",
             "site_id": site["site_id"],
             "location": site["site_name"],
+            # non-sensitive
+            "full_name": fake.name(),
+            "role": random.choice(ROLES),
+            "hire_date": hire.strftime("%Y-%m-%d"),
+            # sensitive / restricted PII
+            "national_id": "784-" + fake.numerify("####-#######-#"),   # Emirates-ID shape
+            "home_address": fake.address().replace("\n", ", "),
+            "phone": "+9715" + fake.numerify("########"),
+            "medical_conditions": weighted_choice(MEDICAL_CONDITIONS),
+            "monthly_salary_aed": random.randint(3500, 42000),
         })
     return workers
 
@@ -226,6 +248,21 @@ def build():
             PRIMARY KEY (site_id, date)
         )
     """)
+    cur.execute("""
+        CREATE TABLE workers (
+            worker_id TEXT PRIMARY KEY,
+            full_name TEXT NOT NULL,
+            role TEXT NOT NULL,
+            site_id TEXT NOT NULL,
+            hire_date TEXT NOT NULL,
+            -- restricted PII (protected by the confidentiality guardrail)
+            national_id TEXT NOT NULL,
+            home_address TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            medical_conditions TEXT NOT NULL,
+            monthly_salary_aed INTEGER NOT NULL
+        )
+    """)
 
     cur.executemany(
         "INSERT INTO safety_incidents VALUES (:incident_id,:date,:location,:site_id,:severity,:worker_id,:incident_type,:resolution_status,:description)",
@@ -239,6 +276,11 @@ def build():
         "INSERT INTO operational_metrics VALUES (:site_id,:date,:hours_worked,:incidents_reported,:near_misses,:productivity_index)",
         metrics,
     )
+    cur.executemany(
+        "INSERT INTO workers VALUES (:worker_id,:full_name,:role,:site_id,:hire_date,"
+        ":national_id,:home_address,:phone,:medical_conditions,:monthly_salary_aed)",
+        workers,
+    )
 
     cur.execute("CREATE INDEX idx_incidents_date ON safety_incidents(date)")
     cur.execute("CREATE INDEX idx_incidents_worker ON safety_incidents(worker_id)")
@@ -247,10 +289,11 @@ def build():
     cur.execute("CREATE INDEX idx_metrics_date ON operational_metrics(date)")
 
     conn.commit()
-    total = len(incidents) + len(vitals) + len(metrics)
+    total = len(incidents) + len(vitals) + len(metrics) + len(workers)
     print(f"safety_incidents: {len(incidents)} rows")
     print(f"worker_vitals: {len(vitals)} rows")
     print(f"operational_metrics: {len(metrics)} rows")
+    print(f"workers: {len(workers)} rows")
     print(f"total: {total} rows -> {os.path.abspath(DB_PATH)}")
     conn.close()
 

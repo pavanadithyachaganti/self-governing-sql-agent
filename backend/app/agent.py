@@ -90,13 +90,15 @@ class SQLAgent:
         with span(trace, "guardrail") as m:
             static = guardrails.static_check(sql, settings.max_joins)
             decision = static
+            meta = {}
             if static.decision != "block":
+                sensitivity = guardrails.sensitivity_check(sql)
                 est = estimate_rows(sql)
                 size = guardrails.size_check(est, settings.max_result_rows, sql)
-                decision = guardrails.combine(static, size)
-                m["meta"] = {"row_estimate": est}
+                decision = guardrails.combine(static, sensitivity, size)
+                meta = {"row_estimate": est}
             m["detail"] = f"{decision.decision}: {decision.rule}"
-            m["meta"] = {**m.get("meta", {}), "decision": decision.decision,
+            m["meta"] = {**meta, "decision": decision.decision,
                          "rule": decision.rule, "reason": decision.reason}
             return decision
 
