@@ -26,6 +26,9 @@ class Settings:
 
     # Orchestration
     max_repairs = int(_get("MAX_REPAIRS", "1"))            # auto-retries after a SQL execution error
+    summarize_results = _get("SUMMARIZE_RESULTS", "true").lower() == "true"
+    faithfulness_threshold = float(_get("FAITHFULNESS_THRESHOLD", "0.7"))
+    summarize_max_rows = int(_get("SUMMARIZE_MAX_ROWS", "40"))  # rows shown to the summarizer
 
     # Memory / context
     memory_summarize_after_turns = int(_get("MEMORY_SUMMARIZE_AFTER_TURNS", "20"))

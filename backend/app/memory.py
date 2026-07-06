@@ -132,6 +132,45 @@ def recent_turns(session_id=None, limit=20):
     return out
 
 
+def stats():
+    """Aggregate view over the whole decision log, for the dashboard."""
+    c = _conn()
+    total = c.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
+
+    def counts(col):
+        rows = c.execute(
+            f"SELECT COALESCE({col}, '(none)'), COUNT(*) FROM turns GROUP BY {col} ORDER BY 2 DESC"
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    by_status = counts("status")
+    by_decision = counts("guardrail_decision")
+    by_route = counts("route")
+
+    reviewed = c.execute(
+        "SELECT COUNT(*) FROM turns WHERE human_approval IS NOT NULL"
+    ).fetchone()[0]
+    approved = c.execute(
+        "SELECT COUNT(*) FROM turns WHERE human_approval IN ('approve', 'modify')"
+    ).fetchone()[0]
+    pending = c.execute(
+        "SELECT COUNT(*) FROM turns WHERE status = 'needs_approval'"
+    ).fetchone()[0]
+    c.close()
+
+    blocked = by_status.get("blocked", 0)
+    return {
+        "total": total,
+        "blocked": blocked,
+        "needs_approval": pending,
+        "reviewed": reviewed,
+        "approval_rate": round(approved / reviewed, 3) if reviewed else None,
+        "by_status": by_status,
+        "by_decision": by_decision,
+        "by_route": by_route,
+    }
+
+
 def context_for_prompt(session_id, max_turns=5):
     """Short recent-history text fed back to the LLM so follow-up questions
     ('and for last month?') resolve against what was just asked."""

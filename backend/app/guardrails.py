@@ -29,6 +29,7 @@ _RESTRICTED_COLUMNS = ("national_id", "home_address", "phone",
                        "medical_conditions", "monthly_salary_aed")
 _SELECT_STAR = re.compile(r"select\s+\*|\b\w+\.\*", re.I)   # "SELECT *" or "w.*" (not COUNT(*))
 _WORKERS_TABLE = re.compile(r"\bworkers\b", re.I)
+_AGGREGATES = ("avg", "sum", "min", "max", "count", "total")
 
 
 @dataclass
@@ -68,25 +69,40 @@ def static_check(sql: str, max_joins: int) -> Decision:
     return Decision("allow", "passed", "Passed all structural safety checks.")
 
 
+def _uses_restricted_column_raw(lowered, column):
+    """True if the restricted column appears anywhere OUTSIDE an aggregate call.
+    Aggregated use (AVG/SUM/MIN/MAX/COUNT over the column) exposes only a
+    statistic, not any individual's value, so it is permitted; a bare selection
+    or a WHERE/filter on the raw value is not."""
+    total = len(re.findall(rf"\b{column}\b", lowered))
+    if total == 0:
+        return False
+    agg = "|".join(_AGGREGATES)
+    # occurrences of the column inside an aggregate function: agg( ... column ... )
+    aggregated = len(re.findall(rf"(?:{agg})\s*\([^()]*\b{column}\b[^()]*\)", lowered))
+    return total > aggregated
+
+
 def sensitivity_check(sql: str) -> Decision:
-    """Confidentiality guardrail: refuse to expose restricted PII columns from
-    the workers table. Catches both direct references (SELECT national_id ...)
-    and blanket SELECT * that would sweep the columns in indirectly."""
+    """Confidentiality guardrail. Refuses to expose restricted PII columns from
+    the workers table at the row level, while allowing aggregate statistics over
+    them (e.g. average salary by site). Also catches blanket SELECT * that would
+    sweep the columns in indirectly."""
     lowered = (sql or "").lower()
 
-    named = [c for c in _RESTRICTED_COLUMNS if re.search(rf"\b{c}\b", lowered)]
-    if named:
-        shown = ", ".join(named)
+    raw = [c for c in _RESTRICTED_COLUMNS if _uses_restricted_column_raw(lowered, c)]
+    if raw:
+        shown = ", ".join(raw)
         return Decision("block", "restricted_pii",
-                        f"Query accesses restricted personal data ({shown}); blocked by the "
-                        f"data-access policy.")
+                        f"Query exposes restricted personal data at the row level ({shown}); "
+                        f"blocked by the data-access policy. Aggregate statistics are allowed.")
 
     if _WORKERS_TABLE.search(lowered) and _SELECT_STAR.search(lowered):
         return Decision("block", "restricted_pii",
                         "Query selects all columns from the workers table, which would expose "
                         "restricted personal data; blocked by the data-access policy.")
 
-    return Decision("allow", "no_pii", "No restricted columns accessed.")
+    return Decision("allow", "no_pii", "No restricted columns exposed at the row level.")
 
 
 def size_check(row_estimate, max_result_rows: int, sql: str) -> Decision:

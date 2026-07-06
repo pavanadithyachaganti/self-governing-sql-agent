@@ -43,6 +43,8 @@ _MOCK_RULES = [
     (re.compile(r"near miss", re.I),
      "SELECT site_id, SUM(near_misses) AS total_near_misses FROM operational_metrics "
      "GROUP BY site_id ORDER BY total_near_misses DESC;"),
+    (re.compile(r"(average|avg|mean|typical).*(salary|pay|wage)|(salary|salaries|pay|wage).*(average|avg|mean|by (site|role)|per (site|role)|distribution)", re.I),
+     "SELECT site_id, AVG(monthly_salary_aed) AS avg_salary FROM workers GROUP BY site_id ORDER BY avg_salary DESC;"),
     (re.compile(r"salary|salaries|pay|wage", re.I),
      "SELECT worker_id, full_name, monthly_salary_aed FROM workers ORDER BY monthly_salary_aed DESC;"),
     (re.compile(r"national id|emirates id|passport|address|phone|medical|health condition", re.I),
@@ -78,6 +80,11 @@ class MockProvider:
                 "sql": "SELECT COUNT(*) AS total_incidents FROM safety_incidents;",
                 "explanation": "Mock repair: substituted a safe fallback query.",
             })
+        if "step=summarize" in sys_l:
+            return json.dumps({"answer": "[mock] The query returned results — see the table below. "
+                                         "Set a real provider for a natural-language summary."})
+        if "step=faithfulness" in sys_l:
+            return json.dumps({"score": 1.0, "reason": "Mock: treated as grounded."})
         return self._generate(question)
 
     def _plan(self, question):
@@ -86,10 +93,13 @@ class MockProvider:
             return json.dumps({"route": "chit_chat",
                                "message": "I answer questions about the safety operations database. "
                                           "Try asking about incidents, worker vitals, or site productivity."})
-        if any(p in q for p in ["salary", "salaries", "wage", "pay ", " pay", "national id", "emirates id",
-                                "passport", "home address", "phone", "medical", "health condition"]):
+        restricted_kw = any(p in q for p in ["salary", "salaries", "wage", "pay ", " pay", "national id",
+                            "emirates id", "passport", "home address", "phone", "medical", "health condition"])
+        aggregate_kw = any(p in q for p in ["average", "avg", "mean", "total", "sum", "distribution",
+                            "how many", "count", "per site", "per role", "by site", "by role", "typical"])
+        if restricted_kw and not aggregate_kw:
             return json.dumps({"route": "restricted",
-                               "message": "That request asks for restricted personal data "
+                               "message": "That request asks for an individual's restricted personal data "
                                           "(such as salary, national ID, contact details, or medical "
                                           "information), which the data-access policy does not allow."})
         if len(q.split()) <= 2:

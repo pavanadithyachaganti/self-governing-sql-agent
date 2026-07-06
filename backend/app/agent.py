@@ -22,8 +22,10 @@ PLAN_SYSTEM = f"""STEP=plan
 You are the router for a natural-language interface to a safety operations database.
 Classify the user's question into exactly one route:
 - "sql": it asks for data that requires querying the database.
-- "restricted": it asks to view individual workers' restricted personal data — national ID,
+- "restricted": it asks to view an individual worker's restricted personal data — national ID,
   home address, phone number, medical conditions, or salary. Refuse these at the door.
+  NOTE: aggregate statistics over those fields (e.g. "average salary by site", "how many workers
+  have each medical condition") are NOT restricted — route those to "sql".
 - "clarify": it is too vague or ambiguous to answer; you need one clarifying question.
 - "chit_chat": it is a greeting, thanks, or a question about what you can do (no data needed).
 
@@ -57,6 +59,20 @@ Schema:
 You will be given the original question, the failed SQL, and the database error.
 Return a corrected single read-only SELECT query.
 Respond with strict JSON only, no markdown: {{"sql": "<query>", "explanation": "<one sentence>"}}
+"""
+
+SUMMARIZE_SYSTEM = """STEP=summarize
+You are given a user's question and the exact rows a SQL query returned.
+Write a concise, direct answer (1-3 sentences) using ONLY numbers and facts present
+in those rows. Do not invent values, do not extrapolate beyond the rows shown.
+Respond with strict JSON only, no markdown: {"answer": "<your answer>"}
+"""
+
+FAITHFULNESS_SYSTEM = """STEP=faithfulness
+You are a strict grader. You are given a proposed answer and the exact data rows it
+should be based on. Score how fully the answer is supported by the rows, from 0.0
+(fabricated / unsupported) to 1.0 (every claim is directly supported).
+Respond with strict JSON only, no markdown: {"score": <0.0-1.0>, "reason": "<one sentence>"}
 """
 
 
@@ -136,11 +152,45 @@ class SQLAgent:
             attempt_sql, attempt_expl = new_sql, new_expl or attempt_expl
         return attempt_sql, attempt_expl, [], [], error
 
+    def _rows_as_text(self, columns, rows):
+        capped = rows[:settings.summarize_max_rows]
+        lines = [" | ".join(columns)]
+        for r in capped:
+            lines.append(" | ".join("" if v is None else str(v) for v in r))
+        if len(rows) > len(capped):
+            lines.append(f"... ({len(rows) - len(capped)} more rows not shown)")
+        return "\n".join(lines)
+
+    def _summarize(self, question, columns, rows, trace):
+        """Turn result rows into a grounded natural-language answer, then verify
+        the answer is actually supported by those rows (faithfulness)."""
+        table = self._rows_as_text(columns, rows)
+        with span(trace, "summarize") as m:
+            parsed = complete_json(self.llm, SUMMARIZE_SYSTEM,
+                                   f"Question: {question}\n\nRows:\n{table}")
+            answer = (parsed.get("answer") or "").strip()
+            m["detail"] = answer or "(no summary)"
+        score, reason = None, ""
+        if answer:
+            with span(trace, "verify") as m:
+                graded = complete_json(self.llm, FAITHFULNESS_SYSTEM,
+                                       f"Answer: {answer}\n\nRows:\n{table}")
+                try:
+                    score = round(float(graded.get("score")), 2)
+                except (TypeError, ValueError):
+                    score = None
+                reason = graded.get("reason", "")
+                m["detail"] = f"faithfulness = {score}" if score is not None else "faithfulness = n/a"
+                m["meta"] = {"score": score, "reason": reason, "grounded":
+                             (score is None or score >= settings.faithfulness_threshold)}
+        return answer, score
+
     # ---- assembling a response -------------------------------------------
 
     def _response(self, question, trace, route="sql", sql="", explanation="",
                   columns=None, rows=None, error=None, guardrail=None,
-                  status="completed", needs_approval=False, message="", turn_id=None):
+                  status="completed", needs_approval=False, message="", turn_id=None,
+                  answer="", faithfulness=None):
         columns = columns or []
         rows = rows or []
         return {
@@ -151,11 +201,14 @@ class SQLAgent:
             "message": message,
             "sql": sql,
             "explanation": explanation,
+            "answer": answer,
+            "faithfulness": faithfulness,
             "columns": columns,
             "rows": rows,
             "row_count": len(rows),
             "error": error,
             "guardrail_decision": (guardrail.decision if guardrail else None),
+            "guardrail_rule": (guardrail.rule if guardrail else None),
             "guardrail_reason": (guardrail.reason if guardrail else None),
             "provider": self.llm.name,
             "trace": trace.to_list(),
@@ -223,15 +276,20 @@ class SQLAgent:
         # allow -> execute (with repair)
         final_sql, final_expl, columns, rows, error = self._execute_with_repair(
             question, sql, explanation, trace)
+        answer, faithfulness = "", None
+        if not error and rows and settings.summarize_results:
+            answer, faithfulness = self._summarize(question, columns, rows, trace)
         turn_id = memory.create_turn(
             session_id, question, route="sql", generated_sql=final_sql,
             guardrail_decision="allow", guardrail_reason=guardrail.reason,
             status="error" if error else "completed",
-            query_result={"columns": columns, "rows": rows}, final_answer=final_expl,
+            query_result={"columns": columns, "rows": rows},
+            final_answer=answer or final_expl,
             row_count=len(rows), error=error, trace=trace.to_list())
         return self._response(question, trace, sql=final_sql, explanation=final_expl,
                               columns=columns, rows=rows, error=error, guardrail=guardrail,
-                              status="error" if error else "completed", turn_id=turn_id)
+                              status="error" if error else "completed", turn_id=turn_id,
+                              answer=answer, faithfulness=faithfulness)
 
     def review(self, turn_id, decision, modified_sql=None, reason=""):
         """Resume a turn that was paused for human review."""
@@ -268,15 +326,19 @@ class SQLAgent:
 
         final_sql, final_expl, columns, rows, error = self._execute_with_repair(
             question, sql, turn.get("final_answer", ""), trace)
+        answer, faithfulness = "", None
+        if not error and rows and settings.summarize_results:
+            answer, faithfulness = self._summarize(question, columns, rows, trace)
         full_trace = (turn.get("trace") or []) + trace.to_list()
         memory.update_turn(
             turn_id, generated_sql=final_sql, human_approval=decision, human_reason=reason,
             guardrail_decision="allow", status="error" if error else "completed",
-            query_result={"columns": columns, "rows": rows}, final_answer=final_expl,
+            query_result={"columns": columns, "rows": rows}, final_answer=answer or final_expl,
             row_count=len(rows), error=error, trace=full_trace)
         resp = self._response(question, trace, sql=final_sql, explanation=final_expl,
                               columns=columns, rows=rows, error=error, guardrail=recheck,
-                              status="error" if error else "completed", turn_id=turn_id)
+                              status="error" if error else "completed", turn_id=turn_id,
+                              answer=answer, faithfulness=faithfulness)
         resp["trace"] = full_trace
         return resp
 
@@ -285,10 +347,12 @@ class SQLAgent:
         return {
             "question": turn["question"], "route": turn.get("route", "sql"),
             "status": turn.get("status"), "needs_approval": False, "message": note,
-            "sql": turn.get("generated_sql", ""), "explanation": turn.get("final_answer", ""),
+            "sql": turn.get("generated_sql", ""), "explanation": "",
+            "answer": turn.get("final_answer", ""), "faithfulness": None,
             "columns": result.get("columns", []), "rows": result.get("rows", []),
             "row_count": turn.get("row_count") or 0, "error": turn.get("error"),
             "guardrail_decision": turn.get("guardrail_decision"),
+            "guardrail_rule": None,
             "guardrail_reason": turn.get("guardrail_reason"),
             "provider": self.llm.name, "trace": turn.get("trace") or [],
             "total_ms": 0.0, "turn_id": turn["id"],

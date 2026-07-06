@@ -6,7 +6,7 @@ An agent that turns natural language questions into safe, auditable queries over
 
 ## What this is
 
-A natural-language interface over a synthetic industrial safety operations database. A question is not blindly turned into SQL and run — it is **orchestrated** through named steps that make decisions: the question is routed, turned into SQL, checked by a guardrail layer, held for a human if it looks risky, executed, and repaired if it errors. Every step is traced. No LangChain, LangGraph, AutoGen, or CrewAI — the orchestrator, guardrails, provider abstraction, and memory are plain Python, same discipline as the self-correcting RAG repo.
+A natural-language interface over a synthetic industrial safety operations database. A question is not blindly turned into SQL and run — it is **orchestrated** through named steps that make decisions: the question is routed, turned into SQL, checked by safety and confidentiality guardrails, held for a human if it looks risky, executed, repaired if it errors, and finally summarized into a grounded answer that is checked for faithfulness. Every step is traced, and every decision is logged. No LangChain, LangGraph, AutoGen, or CrewAI — the orchestrator, guardrails, provider abstraction, and memory are plain Python, same discipline as the self-correcting RAG repo.
 
 ## How the orchestration works
 
@@ -22,9 +22,13 @@ question
               └─ allow   → execute
           → execute       run read-only against SQLite
               └─ error?  → repair: feed the error back to the LLM, re-check, retry
+          → summarize     write a grounded natural-language answer from the result rows
+          → verify        score the answer's faithfulness against those rows
 ```
 
-The **guardrail `review` branch is the human-in-the-loop checkpoint.** A flagged query is stored as `needs_approval` and returned *without touching the database*; a later `POST /api/review` resumes it. Crucially, a reviewer who edits a flagged query into something destructive is **re-blocked by the guardrail** — the human gate cannot override the hard safety rules.
+There are two confidentiality checkpoints, not one. An **early planner gate** refuses a request for an individual's personal data before any SQL is generated (fast, cheap), and the **deterministic SQL guardrail** is the authoritative backstop that inspects the actual columns a query would touch. The early gate can be fooled by phrasing; the SQL gate cannot, because it reads the real query.
+
+The **guardrail `review` branch is the human-in-the-loop checkpoint.** A flagged query is stored as `needs_approval` and returned *without touching the database*; a later `POST /api/review` resumes it. Crucially, a reviewer who edits a flagged query into something destructive or PII-exposing is **re-blocked by the guardrail** — the human gate cannot override the hard rules.
 
 ### Guardrail rules
 
@@ -32,11 +36,13 @@ The **guardrail `review` branch is the human-in-the-loop checkpoint.** A flagged
 | --- | --- | --- |
 | `non_select` / `destructive_keyword` | block | anything that isn't a read-only SELECT (DROP, DELETE, UPDATE, INSERT, ALTER, TRUNCATE…) |
 | `multiple_statements` | block | more than one statement (blocks `; DROP …` injection) |
-| `restricted_pii` | block | query touches a restricted `workers` column (national_id, home_address, phone, medical_conditions, monthly_salary_aed), including a blanket `SELECT *` that would expose them |
+| `restricted_pii` | block | query exposes a restricted `workers` column at the **row level** (national_id, home_address, phone, medical_conditions, monthly_salary_aed), or a blanket `SELECT *` that would sweep them |
 | `join_complexity` | review | more JOINs than `MAX_JOINS` (default 2) |
 | `large_result` | review | estimated rows over `MAX_RESULT_ROWS` (default 200) with no LIMIT |
 
-The three block rules cover three distinct risks: **safety** (don't mutate data), **confidentiality** (don't leak personal data), and injection (one statement only). The confidentiality rule is deterministic — it does not rely on the model choosing to refuse. When the model *does* write a query for restricted columns, the guardrail catches it and names the offending fields.
+The three block rules cover three distinct risks: **safety** (don't mutate data), **confidentiality** (don't leak personal data), and injection (one statement only). The confidentiality rule is deterministic — it does not rely on the model choosing to refuse.
+
+**Aggregate vs. row-level PII.** The confidentiality rule is column-aware: a *statistic computed over* a sensitive column is allowed, while any *row-level* exposure of it is blocked. So `SELECT AVG(monthly_salary_aed) ... GROUP BY site_id` runs (no individual's salary is revealed), but `SELECT monthly_salary_aed FROM workers`, a `WHERE monthly_salary_aed > 30000` filter, or grouping by the raw column are all blocked. Filtering or grouping on raw sensitive values is treated conservatively because rare-category counts can re-identify people in small groups.
 
 Every decision and every human choice is written to the SQLite memory log, so the conversation history doubles as an audit trail.
 
@@ -105,8 +111,11 @@ curl -X POST http://localhost:8000/api/query \
 
 ```bash
 python scripts/smoke_test.py     # offline; exercises every branch: routing, guardrail block,
-                                 # human review (approve/reject/modify), and the repair loop
+                                 # human review (approve/reject/modify), summarization, repair
+python scripts/run_eval.py       # scored guardrail + routing regression suite (exits non-zero on fail)
 ```
+
+`run_eval.py` reads `data/eval_set.json` — a set of SQL strings tagged with their expected guardrail decision, plus questions tagged with their expected route — and reports a pass rate. Any prompt or rule change that quietly breaks a guardrail shows up as a failed case. It runs on the mock provider, so it is deterministic and needs no key.
 
 ## Project structure
 
@@ -116,34 +125,39 @@ backend/
     config.py     settings from .env (guardrail thresholds, repair budget)
     db.py         SQLite connection, schema description, row-estimate + query runner
     llm.py        Anthropic / OpenAI / mock provider abstraction (plan, generate, repair)
-    guardrails.py named safety rules -> allow | review | block, with reasons
+    guardrails.py named safety + confidentiality rules -> allow | review | block, with reasons
     trace.py      per-step timing spans
-    agent.py      the orchestrator: plan -> generate -> guardrail -> review -> execute -> repair
-    memory.py     conversation memory + decision log (SQLite); pending-review state machine
+    agent.py      the orchestrator: plan -> guardrail -> review -> execute -> repair -> summarize -> verify
+    memory.py     conversation memory + decision log (SQLite); pending-review state machine; stats
+    evals.py      guardrail + routing regression suite
     schemas.py    pydantic request/response models
     main.py       FastAPI app and endpoints
-    static/       the query UI (trace, guardrail badges, approval panel)
+    static/       the query UI (Ask + Decision-log dashboard)
   data/
-    operations.db   generated synthetic dataset (gitignored, regenerate with the script below)
+    operations.db      generated synthetic dataset (gitignored, regenerate with the script below)
+    eval_set.json      tagged regression cases
   scripts/
     generate_data.py   synthetic dataset generator (Faker)
     smoke_test.py      offline end-to-end check across all branches
+    run_eval.py        scored regression suite
 ```
 
 ## API
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /api/query` | orchestrate a question; returns route, SQL, guardrail decision, results (or a `needs_approval` turn), and the full trace |
+| `POST /api/query` | orchestrate a question; returns route, SQL, guardrail decision, grounded answer + faithfulness, results (or a `needs_approval` turn), and the full trace |
 | `POST /api/review` | resume a flagged turn: `{turn_id, decision: approve\|reject\|modify, modified_sql?, reason?}` |
 | `GET /api/history` | recent turns from the memory log / decision trail |
+| `GET /api/stats` | aggregate decision-log metrics (by status / decision / route, approval rate) |
+| `POST /api/eval` | run the guardrail + routing regression suite, return the scored report |
 | `GET /api/health` | active LLM provider and current guardrail thresholds |
 
 ## Roadmap
 
 - **Week 1 (done).** Synthetic dataset, naive text-to-SQL loop, append-only memory.
-- **Week 2 (done).** Multi-step orchestrator (plan → generate → guardrail → human review → execute → repair). Guardrail layer with named rules and reasons. Human-in-the-loop review (approve / reject / modify) feeding a decision log. Per-step trace observability. Single-page UI for all of it.
-- **Week 3.** Polish, deploy to Render + Vercel, eval scripts (a fixed question set with expected guardrail decisions as a regression test), public writeup alongside the RAG repo.
+- **Week 2 (done).** Multi-step orchestrator (plan → guardrail → human review → execute → repair → summarize → verify). Safety + confidentiality guardrails with named rules and reasons, including an aggregate-vs-row-level PII policy and an early planner gate. Human-in-the-loop review (approve / reject / modify) feeding a decision log. Grounded result summarization with a faithfulness check. Per-step trace observability. A regression eval suite. Single-page UI with an Ask view and a decision-log dashboard.
+- **Week 3.** Deploy to Render + Vercel, role-based access policy (different roles see different columns), memory summarization for long conversations, public writeup alongside the RAG repo.
 
 ## What this demonstrates
 

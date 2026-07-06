@@ -99,6 +99,27 @@
     color: #cfe8dd; border-radius: 8px; padding: 10px; font-family: var(--mono); font-size: 12.5px; display: none; }
 
   .foot { margin-top: 40px; font-size: 12px; color: var(--faint); }
+
+  /* tabs */
+  .tabs { display: flex; gap: 6px; margin: 0 0 22px; }
+  .tab-btn { font-family: var(--mono); font-size: 12px; color: var(--muted); background: none;
+    border: 1px solid var(--line); border-radius: 8px; padding: 7px 14px; cursor: pointer; }
+  .tab-btn.active { color: var(--text); border-color: #39414a; background: var(--panel); }
+  .hidden { display: none; }
+
+  /* dashboard */
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .card .n { font-size: 26px; font-weight: 600; letter-spacing: -.02em; }
+  .card .k { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--faint); margin-top: 4px; }
+  .bars { display: flex; flex-direction: column; gap: 7px; }
+  .bar { display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 12px; }
+  .bar .bk { min-width: 130px; color: var(--muted); }
+  .bar .bt { height: 8px; border-radius: 4px; background: var(--accent); }
+  .bar .bt.block { background: var(--bad); } .bar .bt.review { background: var(--warn); }
+  .bar .bv { color: var(--faint); }
+  @media (max-width: 640px) { .cards { grid-template-columns: repeat(2, 1fr); } }
 </style>
 </head>
 <body>
@@ -108,18 +129,31 @@
     <div class="health" id="health"><span class="tag">connecting…</span></div>
   </header>
 
-  <h1 class="lede">Ask the operational database in plain English.</h1>
-  <p class="sub">Each question is routed, turned into SQL, checked by the guardrails, and — if risky — held for your review before it runs. Every step is traced.</p>
-
-  <div class="askrow">
-    <input id="q" placeholder="e.g. Which sites had the most critical incidents last month?" autofocus />
-    <button class="send" id="send">Ask</button>
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="ask" id="tab-ask">Ask</button>
+    <button class="tab-btn" data-tab="log" id="tab-log">Decision log</button>
   </div>
-  <div class="chips" id="chips"></div>
 
-  <div id="out"></div>
+  <div id="view-ask">
+    <h1 class="lede">Ask the operational database in plain English.</h1>
+    <p class="sub">Each question is routed, turned into SQL, checked by the guardrails, and — if risky — held for your review before it runs. Every step is traced.</p>
 
-  <div class="foot">Week 2 · plan → generate → guardrail → human review → execute → repair · full trace</div>
+    <div class="askrow">
+      <input id="q" placeholder="e.g. Which sites had the most critical incidents last month?" autofocus />
+      <button class="send" id="send">Ask</button>
+    </div>
+    <div class="chips" id="chips"></div>
+
+    <div id="out"></div>
+  </div>
+
+  <div id="view-log" class="hidden">
+    <h1 class="lede">Decision log</h1>
+    <p class="sub">Every question, its guardrail decision, and any human decision — the audit trail.</p>
+    <div id="log"></div>
+  </div>
+
+  <div class="foot">plan → guardrail → human review → execute → summarize → verify · full trace + audit log</div>
 </div>
 
 <script>
@@ -237,10 +271,16 @@ function render(d) {
   const results = d.error ? "" : table(d.columns, d.rows);
   const rejected = d.status === "rejected"
     ? `<div class="banner info">Rejected by reviewer${d.message ? ": " + esc(d.message) : ""}.</div>` : "";
+  const faith = (d.faithfulness !== null && d.faithfulness !== undefined)
+    ? `<span class="badge ${d.faithfulness >= 0.7 ? "allow" : "review"}">faithfulness ${d.faithfulness}</span>` : "";
+  const answerBlock = d.answer
+    ? `<div class="panel"><div class="label">Answer ${faith}</div>
+         <div class="explanation">${esc(d.answer)}</div></div>`
+    : (d.explanation ? `<div class="panel"><div class="label">Answer</div>
+         <div class="explanation">${esc(d.explanation)}</div></div>` : "");
   out.innerHTML = `
     <div class="result">
-      ${d.explanation ? `<div class="panel"><div class="label">Answer</div>
-        <div class="explanation">${esc(d.explanation)}</div></div>` : ""}
+      ${answerBlock}
       <div class="panel">
         <div class="label">Generated SQL ${guardrailBadge(d.guardrail_decision)}</div>
         <pre class="sql">${esc(d.sql) || "(none)"}</pre>
@@ -293,6 +333,65 @@ async function ask() {
     btn.disabled = false; btn.textContent = "Ask";
   }
 }
+
+// ---- decision log dashboard ----
+function bars(obj, kind) {
+  const entries = Object.entries(obj || {}).filter(([k]) => k !== "(none)");
+  if (!entries.length) return `<div class="explanation" style="color:var(--muted)">No data yet.</div>`;
+  const max = Math.max(...entries.map(([, v]) => v), 1);
+  return `<div class="bars">` + entries.map(([k, v]) => {
+    const cls = /block|blocked/.test(k) ? "block" : /review|needs_approval/.test(k) ? "review" : "";
+    return `<div class="bar"><span class="bk">${esc(k)}</span>
+      <span class="bt ${cls}" style="width:${Math.round((v / max) * 160)}px"></span>
+      <span class="bv">${v}</span></div>`;
+  }).join("") + `</div>`;
+}
+
+async function loadLog() {
+  const log = document.getElementById("log");
+  log.innerHTML = `<div class="panel"><div class="explanation" style="color:var(--muted)">Loading…</div></div>`;
+  try {
+    const [s, h] = await Promise.all([
+      (await fetch("/api/stats")).json(),
+      (await fetch("/api/history?limit=30")).json(),
+    ]);
+    const approval = s.approval_rate === null || s.approval_rate === undefined
+      ? "—" : Math.round(s.approval_rate * 100) + "%";
+    const cards = `<div class="cards">
+      <div class="card"><div class="n">${s.total}</div><div class="k">total queries</div></div>
+      <div class="card"><div class="n">${s.blocked}</div><div class="k">blocked</div></div>
+      <div class="card"><div class="n">${s.needs_approval}</div><div class="k">awaiting review</div></div>
+      <div class="card"><div class="n">${approval}</div><div class="k">approval rate</div></div>
+    </div>`;
+    const breakdown = `<div class="panel"><div class="label">Guardrail decisions</div>${bars(s.by_decision)}</div>
+      <div class="panel"><div class="label">Routes</div>${bars(s.by_route)}</div>`;
+    const rows = (h.turns || []).map(t => `<tr>
+      <td>${esc(t.route || "")}</td>
+      <td>${esc((t.sql || "").slice(0, 60))}</td>
+      <td>${esc(t.guardrail_decision || "")}</td>
+      <td>${esc(t.human_approval || "")}</td>
+      <td>${esc(t.status || "")}</td></tr>`).join("");
+    const tableHtml = rows
+      ? `<div class="panel"><div class="label">Recent decisions</div>
+          <div class="tablewrap"><table><thead><tr><th>route</th><th>sql</th><th>guardrail</th>
+          <th>human</th><th>status</th></tr></thead><tbody>${rows}</tbody></table></div></div>`
+      : "";
+    log.innerHTML = cards + breakdown + tableHtml;
+  } catch (e) {
+    log.innerHTML = `<div class="banner err">Failed to load log: ${esc(e.message)}</div>`;
+  }
+}
+
+document.querySelectorAll(".tab-btn").forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll(".tab-btn").forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    const isLog = b.dataset.tab === "log";
+    document.getElementById("view-ask").classList.toggle("hidden", isLog);
+    document.getElementById("view-log").classList.toggle("hidden", !isLog);
+    if (isLog) loadLog();
+  };
+});
 
 btn.onclick = ask;
 input.addEventListener("keydown", e => { if (e.key === "Enter") ask(); });

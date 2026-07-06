@@ -62,6 +62,17 @@ def history(session_id: Optional[str] = None, limit: int = 20):
     return HistoryResponse(turns=memory.recent_turns(session_id, limit))
 
 
+@app.get("/api/stats")
+def stats():
+    return memory.stats()
+
+
+@app.post("/api/eval")
+def run_eval():
+    from . import evals
+    return evals.run(agent=get_agent())
+
+
 @app.get("/")
 def root():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))

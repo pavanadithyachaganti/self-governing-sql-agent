@@ -15,11 +15,14 @@ class QueryResponse(BaseModel):
     message: str = ""                # clarifying question, chit-chat reply, or guardrail/refusal reason
     sql: str = ""
     explanation: str = ""
+    answer: str = ""                 # grounded natural-language summary of the result rows
+    faithfulness: Optional[float] = None  # 0-1 support of the answer by the rows
     columns: List[str] = []
     rows: List[List[Any]] = []
     row_count: int = 0
     error: Optional[str] = None
     guardrail_decision: Optional[str] = None
+    guardrail_rule: Optional[str] = None
     guardrail_reason: Optional[str] = None
     provider: str
     trace: List[Dict[str, Any]] = []

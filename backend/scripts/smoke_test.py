@@ -26,8 +26,11 @@ def main():
     # Routing
     r = agent.run("How many incidents by severity?", "smoke")
     passed &= check("sql route executes", r["route"] == "sql" and r["status"] == "completed" and r["row_count"] > 0)
-    passed &= check("trace has plan+generate+guardrail+execute",
-                    [s["name"] for s in r["trace"]] == ["plan", "generate_sql", "guardrail", "execute"])
+    passed &= check("trace covers plan→generate→guardrail→execute→summarize→verify",
+                    [s["name"] for s in r["trace"]] ==
+                    ["plan", "generate_sql", "guardrail", "execute", "summarize", "verify"])
+    passed &= check("result summarized with faithfulness score",
+                    bool(r["answer"]) and r["faithfulness"] is not None)
 
     r = agent.run("hello there", "smoke")
     passed &= check("chit_chat route skips SQL", r["route"] == "chit_chat" and not r["sql"])
