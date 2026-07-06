@@ -1,10 +1,15 @@
+import os
 from typing import Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from .config import settings
 from .schemas import QueryRequest, QueryResponse, HistoryResponse
 from .agent import SQLAgent
 from . import memory
+
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 app = FastAPI(title="Agent Orchestration System")
 _origins = (["*"] if settings.allowed_origins.strip() == "*"
@@ -39,3 +44,11 @@ def query(req: QueryRequest):
 @app.get("/api/history", response_model=HistoryResponse)
 def history(session_id: Optional[str] = None, limit: int = 20):
     return HistoryResponse(turns=memory.recent_turns(session_id, limit))
+
+
+@app.get("/")
+def root():
+    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

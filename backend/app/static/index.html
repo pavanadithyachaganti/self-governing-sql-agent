@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>agent orchestration</title>
+<style>
+  :root {
+    --bg: #0d0e10; --panel: #15171a; --panel2: #1b1e22; --line: #262a30;
+    --text: #e7e8ea; --muted: #9aa1a9; --faint: #6b727b;
+    --ok: #3ddc97; --warn: #e0a83e; --bad: #e06c5b; --accent: #3ddc97;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Menlo", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans); }
+  body { font-size: 15px; line-height: 1.6; -webkit-font-smoothing: antialiased; }
+  a { color: inherit; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 22px 20px 96px; }
+
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding-bottom: 22px; border-bottom: 1px solid var(--line); margin-bottom: 30px; }
+  .brand { font-family: var(--mono); font-size: 13.5px; letter-spacing: .04em; color: var(--text); }
+  .brand .caret { display: inline-block; width: 7px; height: 15px; background: var(--accent);
+    margin-left: 5px; vertical-align: -2px; animation: blink 1.15s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .health { font-family: var(--mono); font-size: 11px; color: var(--faint); text-align: right;
+    display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .health b { color: var(--muted); font-weight: 400; }
+  .tag { border: 1px solid var(--line); border-radius: 5px; padding: 2px 7px; }
+  .tag.live { color: var(--ok); border-color: rgba(61,220,151,.3); }
+
+  h1.lede { font-size: 22px; font-weight: 500; letter-spacing: -.01em; margin: 4px 0 6px; }
+  .sub { color: var(--muted); font-size: 14px; margin: 0 0 22px; }
+
+  .askrow { display: flex; gap: 8px; }
+  input#q { flex: 1; background: var(--panel); border: 1px solid var(--line); color: var(--text);
+    border-radius: 10px; padding: 13px 14px; font-size: 15px; font-family: var(--sans); outline: none; }
+  input#q:focus { border-color: #39414a; }
+  input#q::placeholder { color: var(--faint); }
+  button.send { background: var(--accent); color: #072016; border: none; border-radius: 10px;
+    padding: 0 18px; font-weight: 500; font-size: 14px; cursor: pointer; }
+  button.send:disabled { opacity: .5; cursor: default; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+  .chip { font-size: 12.5px; color: var(--muted); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 999px; padding: 5px 11px; cursor: pointer; }
+  .chip:hover { border-color: #39414a; color: var(--text); }
+
+  .result { margin-top: 30px; animation: rise .28s ease both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
+  .label { font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--faint); margin-bottom: 9px; }
+  .explanation { font-size: 15px; line-height: 1.7; }
+  pre.sql { font-family: var(--mono); font-size: 13px; line-height: 1.6; background: var(--panel2);
+    border: 1px solid var(--line); border-radius: 8px; padding: 13px 14px; margin: 0;
+    white-space: pre-wrap; word-break: break-word; color: #cfe8dd; }
+  .meta { font-family: var(--mono); font-size: 11.5px; color: var(--faint); margin-top: 10px;
+    display: flex; gap: 12px; flex-wrap: wrap; }
+
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line);
+    font-family: var(--mono); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; position: sticky; top: 0; background: var(--panel); }
+  td { color: var(--text); }
+  tr:hover td { background: var(--panel2); }
+  .rowcount { font-family: var(--mono); font-size: 11.5px; color: var(--faint); margin-top: 8px; }
+
+  .banner { margin-top: 16px; font-size: 12.5px; border-radius: 8px; padding: 9px 12px; font-family: var(--mono); }
+  .banner.err { color: var(--bad); border: 1px solid rgba(224,108,91,.3); background: rgba(224,108,91,.07); }
+
+  .foot { margin-top: 40px; font-size: 12px; color: var(--faint); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">agent-orchestration<span class="caret"></span></div>
+    <div class="health" id="health"><span class="tag">connecting…</span></div>
+  </header>
+
+  <h1 class="lede">Ask the operational database in plain English.</h1>
+  <p class="sub">Your question becomes SQL, runs against the synthetic safety-operations dataset, and the result comes back — with the generated query shown.</p>
+
+  <div class="askrow">
+    <input id="q" placeholder="e.g. Which sites had the most critical incidents last month?" autofocus />
+    <button class="send" id="send">Ask</button>
+  </div>
+  <div class="chips" id="chips"></div>
+
+  <div id="out"></div>
+
+  <div class="foot">Week 1 · text-to-SQL loop · no guardrails or human review yet</div>
+</div>
+
+<script>
+const EXAMPLES = [
+  "How many incidents are there by severity?",
+  "Which sites have the highest productivity?",
+  "Show me all critical incidents",
+  "Average heart rate per worker for the top 10 by heart rate",
+  "For each incident type, how many incidents and the average worker heart rate?",
+  "Which site had the worst productivity in March 2026?",
+];
+
+const out = document.getElementById("out");
+const input = document.getElementById("q");
+const btn = document.getElementById("send");
+
+function esc(v) {
+  return String(v === null ? "" : v).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+}
+
+async function health() {
+  try {
+    const r = await fetch("/api/health");
+    const d = await r.json();
+    document.getElementById("health").innerHTML =
+      `<span class="tag live">● ${esc(d.status)}</span><span class="tag">provider: <b>${esc(d.provider)}</b></span>`;
+  } catch {
+    document.getElementById("health").innerHTML = `<span class="tag">offline</span>`;
+  }
+}
+
+function renderChips() {
+  const c = document.getElementById("chips");
+  c.innerHTML = "";
+  EXAMPLES.forEach(q => {
+    const el = document.createElement("span");
+    el.className = "chip";
+    el.textContent = q;
+    el.onclick = () => { input.value = q; ask(); };
+    c.appendChild(el);
+  });
+}
+
+function renderTable(cols, rows) {
+  if (!cols.length) return "";
+  const head = "<tr>" + cols.map(c => `<th>${esc(c)}</th>`).join("") + "</tr>";
+  const body = rows.map(r => "<tr>" + r.map(v =>
+    `<td>${esc(typeof v === "number" ? (Number.isInteger(v) ? v : v.toFixed(4)) : v)}</td>`
+  ).join("") + "</tr>").join("");
+  return `<div class="tablewrap"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+}
+
+function render(d) {
+  const errBanner = d.error ? `<div class="banner err">SQL error: ${esc(d.error)}</div>` : "";
+  const table = d.error ? "" : renderTable(d.columns, d.rows);
+  out.innerHTML = `
+    <div class="result">
+      <div class="panel">
+        <div class="label">Answer</div>
+        <div class="explanation">${esc(d.explanation) || "&mdash;"}</div>
+      </div>
+      <div class="panel">
+        <div class="label">Generated SQL</div>
+        <pre class="sql">${esc(d.sql) || "(none)"}</pre>
+        ${errBanner}
+        <div class="meta">
+          <span>rows: ${d.row_count}</span>
+          <span>${d.total_ms} ms</span>
+          <span>provider: ${esc(d.provider)}</span>
+        </div>
+      </div>
+      ${table ? `<div class="panel"><div class="label">Results</div>${table}
+        <div class="rowcount">${d.row_count} row${d.row_count === 1 ? "" : "s"}</div></div>` : ""}
+    </div>`;
+}
+
+async function ask() {
+  const question = input.value.trim();
+  if (!question) return;
+  btn.disabled = true;
+  btn.textContent = "…";
+  out.innerHTML = `<div class="result"><div class="panel"><div class="label">Running</div>
+    <div class="explanation" style="color:var(--muted)">Generating SQL and querying…</div></div></div>`;
+  try {
+    const r = await fetch("/api/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question }),
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    render(await r.json());
+  } catch (e) {
+    out.innerHTML = `<div class="result"><div class="banner err">Request failed: ${esc(e.message)}</div></div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Ask";
+  }
+}
+
+btn.onclick = ask;
+input.addEventListener("keydown", e => { if (e.key === "Enter") ask(); });
+renderChips();
+health();
+</script>
+</body>
+</html>
