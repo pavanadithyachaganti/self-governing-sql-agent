@@ -42,3 +42,31 @@ def get_connection(readonly=True):
         conn = sqlite3.connect(settings.operations_db_path)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def estimate_rows(sql):
+    """How many rows would this query return, without materializing them all?
+    Wraps the query in a COUNT(*) subquery. Returns None if the wrap fails
+    (some queries can't be counted this way), so callers treat unknown as
+    'no size objection'."""
+    wrapped = f"SELECT COUNT(*) FROM ({sql.strip().rstrip(';')})"
+    try:
+        conn = get_connection()
+        n = conn.execute(wrapped).fetchone()[0]
+        conn.close()
+        return int(n)
+    except sqlite3.Error:
+        return None
+
+
+def run_query(sql):
+    """Execute a read-only query. Returns (columns, rows, error)."""
+    try:
+        conn = get_connection()
+        cur = conn.execute(sql)
+        columns = [d[0] for d in cur.description] if cur.description else []
+        rows = [list(r) for r in cur.fetchall()]
+        conn.close()
+        return columns, rows, None
+    except sqlite3.Error as e:
+        return [], [], str(e)

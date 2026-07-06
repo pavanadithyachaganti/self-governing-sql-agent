@@ -50,15 +50,42 @@ _MOCK_RULES = [
 
 class MockProvider:
     """Runs the full pipeline with no API key. A small keyword-matched rule set
-    picks a plausible SQL query for common question shapes so the guardrail,
-    memory, and (later) human-review layers are exercisable offline."""
+    picks a plausible SQL query for common question shapes so the planner,
+    guardrail, memory, and human-review layers are all exercisable offline.
+
+    The mock inspects a marker the caller puts in the system prompt to tell
+    which orchestration step is asking (STEP=plan / generate / repair)."""
 
     name = "mock"
 
     def complete(self, system, user, temperature=0.0, json_mode=False):
         if not json_mode:
             return "[mock] set LLM_PROVIDER=anthropic or openai with a key for real answers."
+        sys_l = system.lower()
         question = user.strip().split("\n")[-1]
+
+        if "step=plan" in sys_l:
+            return self._plan(question)
+        if "step=repair" in sys_l:
+            # The mock can't truly repair; return a safe fallback query.
+            return json.dumps({
+                "sql": "SELECT COUNT(*) AS total_incidents FROM safety_incidents;",
+                "explanation": "Mock repair: substituted a safe fallback query.",
+            })
+        return self._generate(question)
+
+    def _plan(self, question):
+        q = question.lower()
+        if any(g in q for g in ["hello", "hi ", "thanks", "thank you", "who are you", "what can you do"]):
+            return json.dumps({"route": "chit_chat",
+                               "message": "I answer questions about the safety operations database. "
+                                          "Try asking about incidents, worker vitals, or site productivity."})
+        if len(q.split()) <= 2:
+            return json.dumps({"route": "clarify",
+                               "message": "Could you say a bit more about what you'd like to know?"})
+        return json.dumps({"route": "sql", "message": ""})
+
+    def _generate(self, question):
         for pattern, sql in _MOCK_RULES:
             if pattern.search(question):
                 return json.dumps({
@@ -167,7 +194,8 @@ def _safe_json(raw):
                 return json.loads(m.group(0))
             except Exception:
                 pass
-    return {"sql": "", "explanation": "Could not parse a SQL query from the model output."}
+    # Neutral fallback: callers read fields with .get() and supply their own defaults.
+    return {"_parse_error": True}
 
 
 def complete_json(llm, system, user, temperature=0.0):

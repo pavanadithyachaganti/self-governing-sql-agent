@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from .config import settings
-from .schemas import QueryRequest, QueryResponse, HistoryResponse
+from .schemas import QueryRequest, QueryResponse, ReviewRequest, HistoryResponse
 from .agent import SQLAgent
 from . import memory
 
@@ -30,7 +30,12 @@ def get_agent():
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "provider": settings.llm_provider}
+    return {
+        "status": "ok",
+        "provider": settings.llm_provider,
+        "max_result_rows": settings.max_result_rows,
+        "max_joins": settings.max_joins,
+    }
 
 
 @app.post("/api/query", response_model=QueryResponse)
@@ -38,6 +43,17 @@ def query(req: QueryRequest):
     if not req.question.strip():
         raise HTTPException(400, "Question is empty.")
     result = get_agent().run(req.question, session_id=req.session_id or "default")
+    return QueryResponse(**result)
+
+
+@app.post("/api/review", response_model=QueryResponse)
+def review(req: ReviewRequest):
+    if req.decision not in ("approve", "reject", "modify"):
+        raise HTTPException(400, "decision must be approve, reject, or modify.")
+    result = get_agent().review(req.turn_id, req.decision,
+                                modified_sql=req.modified_sql, reason=req.reason or "")
+    if result is None:
+        raise HTTPException(404, f"No turn with id {req.turn_id}.")
     return QueryResponse(**result)
 
 

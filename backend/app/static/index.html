@@ -51,13 +51,19 @@
   @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
   .label { font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
-    color: var(--faint); margin-bottom: 9px; }
+    color: var(--faint); margin-bottom: 9px; display: flex; align-items: center; gap: 8px; }
   .explanation { font-size: 15px; line-height: 1.7; }
   pre.sql { font-family: var(--mono); font-size: 13px; line-height: 1.6; background: var(--panel2);
     border: 1px solid var(--line); border-radius: 8px; padding: 13px 14px; margin: 0;
     white-space: pre-wrap; word-break: break-word; color: #cfe8dd; }
   .meta { font-family: var(--mono); font-size: 11.5px; color: var(--faint); margin-top: 10px;
     display: flex; gap: 12px; flex-wrap: wrap; }
+
+  .badge { font-family: var(--mono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+    border-radius: 5px; padding: 2px 7px; border: 1px solid var(--line); }
+  .badge.allow { color: var(--ok); border-color: rgba(61,220,151,.35); background: rgba(61,220,151,.07); }
+  .badge.review { color: var(--warn); border-color: rgba(224,168,62,.35); background: rgba(224,168,62,.07); }
+  .badge.block { color: var(--bad); border-color: rgba(224,108,91,.35); background: rgba(224,108,91,.07); }
 
   .tablewrap { overflow-x: auto; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
@@ -68,8 +74,29 @@
   tr:hover td { background: var(--panel2); }
   .rowcount { font-family: var(--mono); font-size: 11.5px; color: var(--faint); margin-top: 8px; }
 
-  .banner { margin-top: 16px; font-size: 12.5px; border-radius: 8px; padding: 9px 12px; font-family: var(--mono); }
+  /* trace */
+  .trace ol { list-style: none; margin: 0; padding: 0; }
+  .trace li { display: flex; align-items: baseline; gap: 10px; padding: 6px 0; border-bottom: 1px dashed var(--line);
+    font-family: var(--mono); font-size: 12px; }
+  .trace li:last-child { border-bottom: none; }
+  .trace .sname { color: var(--accent); min-width: 118px; }
+  .trace .sdetail { color: var(--muted); flex: 1; word-break: break-word; }
+  .trace .sms { color: var(--faint); }
+
+  .banner { margin-top: 4px; font-size: 12.5px; border-radius: 8px; padding: 9px 12px; font-family: var(--mono); }
   .banner.err { color: var(--bad); border: 1px solid rgba(224,108,91,.3); background: rgba(224,108,91,.07); }
+  .banner.warn { color: var(--warn); border: 1px solid rgba(224,168,62,.3); background: rgba(224,168,62,.07); }
+  .banner.info { color: var(--muted); border: 1px solid var(--line); background: var(--panel2); }
+
+  /* review panel */
+  .review .rrow { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .review button { border: 1px solid var(--line); background: var(--panel2); color: var(--text);
+    border-radius: 8px; padding: 8px 14px; font-size: 13px; cursor: pointer; font-family: var(--sans); }
+  .review button.approve { background: var(--accent); color: #072016; border-color: var(--accent); }
+  .review button.reject { color: var(--bad); border-color: rgba(224,108,91,.4); }
+  .review button:disabled { opacity: .5; cursor: default; }
+  .review textarea { width: 100%; margin-top: 10px; background: var(--panel2); border: 1px solid var(--line);
+    color: #cfe8dd; border-radius: 8px; padding: 10px; font-family: var(--mono); font-size: 12.5px; display: none; }
 
   .foot { margin-top: 40px; font-size: 12px; color: var(--faint); }
 </style>
@@ -82,7 +109,7 @@
   </header>
 
   <h1 class="lede">Ask the operational database in plain English.</h1>
-  <p class="sub">Your question becomes SQL, runs against the synthetic safety-operations dataset, and the result comes back — with the generated query shown.</p>
+  <p class="sub">Each question is routed, turned into SQL, checked by the guardrails, and — if risky — held for your review before it runs. Every step is traced.</p>
 
   <div class="askrow">
     <input id="q" placeholder="e.g. Which sites had the most critical incidents last month?" autofocus />
@@ -92,7 +119,7 @@
 
   <div id="out"></div>
 
-  <div class="foot">Week 1 · text-to-SQL loop · no guardrails or human review yet</div>
+  <div class="foot">Week 2 · plan → generate → guardrail → human review → execute → repair · full trace</div>
 </div>
 
 <script>
@@ -100,9 +127,9 @@ const EXAMPLES = [
   "How many incidents are there by severity?",
   "Which sites have the highest productivity?",
   "Show me all critical incidents",
-  "Average heart rate per worker for the top 10 by heart rate",
+  "List every worker vital reading",           // likely trips the large-result review
   "For each incident type, how many incidents and the average worker heart rate?",
-  "Which site had the worst productivity in March 2026?",
+  "hello",                                       // chit-chat route
 ];
 
 const out = document.getElementById("out");
@@ -110,15 +137,17 @@ const input = document.getElementById("q");
 const btn = document.getElementById("send");
 
 function esc(v) {
-  return String(v === null ? "" : v).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  return String(v === null || v === undefined ? "" : v)
+    .replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 }
 
 async function health() {
   try {
-    const r = await fetch("/api/health");
-    const d = await r.json();
+    const d = await (await fetch("/api/health")).json();
     document.getElementById("health").innerHTML =
-      `<span class="tag live">● ${esc(d.status)}</span><span class="tag">provider: <b>${esc(d.provider)}</b></span>`;
+      `<span class="tag live">● ${esc(d.status)}</span>` +
+      `<span class="tag">provider: <b>${esc(d.provider)}</b></span>` +
+      `<span class="tag">review &gt; <b>${esc(d.max_result_rows)}</b> rows</span>`;
   } catch {
     document.getElementById("health").innerHTML = `<span class="tag">offline</span>`;
   }
@@ -126,17 +155,15 @@ async function health() {
 
 function renderChips() {
   const c = document.getElementById("chips");
-  c.innerHTML = "";
   EXAMPLES.forEach(q => {
     const el = document.createElement("span");
-    el.className = "chip";
-    el.textContent = q;
+    el.className = "chip"; el.textContent = q;
     el.onclick = () => { input.value = q; ask(); };
     c.appendChild(el);
   });
 }
 
-function renderTable(cols, rows) {
+function table(cols, rows) {
   if (!cols.length) return "";
   const head = "<tr>" + cols.map(c => `<th>${esc(c)}</th>`).join("") + "</tr>";
   const body = rows.map(r => "<tr>" + r.map(v =>
@@ -145,50 +172,120 @@ function renderTable(cols, rows) {
   return `<div class="tablewrap"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
 }
 
+function traceView(steps) {
+  if (!steps || !steps.length) return "";
+  const items = steps.map(s =>
+    `<li><span class="sname">${esc(s.name)}</span>` +
+    `<span class="sdetail">${esc(s.detail)}</span>` +
+    `<span class="sms">${s.duration_ms} ms</span></li>`).join("");
+  return `<div class="panel trace"><div class="label">Trace</div><ol>${items}</ol></div>`;
+}
+
+function guardrailBadge(d) {
+  if (!d) return "";
+  return `<span class="badge ${esc(d)}">${esc(d)}</span>`;
+}
+
+function reviewPanel(d) {
+  return `
+    <div class="panel review">
+      <div class="label">Human review required ${guardrailBadge("review")}</div>
+      <div class="banner warn">${esc(d.message || d.guardrail_reason)}</div>
+      <pre class="sql" style="margin-top:12px">${esc(d.sql)}</pre>
+      <textarea id="editsql" rows="4">${esc(d.sql)}</textarea>
+      <div class="rrow">
+        <button class="approve" data-act="approve">Approve &amp; run</button>
+        <button data-act="modify">Edit SQL &amp; run</button>
+        <button class="reject" data-act="reject">Reject</button>
+      </div>
+    </div>`;
+}
+
 function render(d) {
+  // chit-chat or clarify: just a message, no SQL
+  if (d.route === "chit_chat" || d.route === "clarify") {
+    out.innerHTML = `<div class="result"><div class="panel">
+      <div class="label">${d.route === "clarify" ? "Needs clarification" : "Assistant"}</div>
+      <div class="explanation">${esc(d.message)}</div></div>${traceView(d.trace)}</div>`;
+    return;
+  }
+
+  // blocked by guardrail
+  if (d.status === "blocked") {
+    out.innerHTML = `<div class="result">
+      <div class="panel"><div class="label">Blocked by guardrail ${guardrailBadge("block")}</div>
+        <div class="banner err">${esc(d.message || d.guardrail_reason)}</div>
+        <pre class="sql" style="margin-top:12px">${esc(d.sql)}</pre></div>
+      ${traceView(d.trace)}</div>`;
+    return;
+  }
+
+  // needs human review
+  if (d.needs_approval) {
+    out.innerHTML = `<div class="result">${reviewPanel(d)}${traceView(d.trace)}</div>`;
+    wireReview(d.turn_id);
+    return;
+  }
+
+  // completed (or error) query
   const errBanner = d.error ? `<div class="banner err">SQL error: ${esc(d.error)}</div>` : "";
-  const table = d.error ? "" : renderTable(d.columns, d.rows);
+  const results = d.error ? "" : table(d.columns, d.rows);
+  const rejected = d.status === "rejected"
+    ? `<div class="banner info">Rejected by reviewer${d.message ? ": " + esc(d.message) : ""}.</div>` : "";
   out.innerHTML = `
     <div class="result">
+      ${d.explanation ? `<div class="panel"><div class="label">Answer</div>
+        <div class="explanation">${esc(d.explanation)}</div></div>` : ""}
       <div class="panel">
-        <div class="label">Answer</div>
-        <div class="explanation">${esc(d.explanation) || "&mdash;"}</div>
-      </div>
-      <div class="panel">
-        <div class="label">Generated SQL</div>
+        <div class="label">Generated SQL ${guardrailBadge(d.guardrail_decision)}</div>
         <pre class="sql">${esc(d.sql) || "(none)"}</pre>
-        ${errBanner}
-        <div class="meta">
-          <span>rows: ${d.row_count}</span>
-          <span>${d.total_ms} ms</span>
-          <span>provider: ${esc(d.provider)}</span>
-        </div>
+        ${errBanner}${rejected}
+        <div class="meta"><span>rows: ${d.row_count}</span><span>${d.total_ms} ms</span>
+          <span>provider: ${esc(d.provider)}</span><span>status: ${esc(d.status)}</span></div>
       </div>
-      ${table ? `<div class="panel"><div class="label">Results</div>${table}
+      ${results ? `<div class="panel"><div class="label">Results</div>${results}
         <div class="rowcount">${d.row_count} row${d.row_count === 1 ? "" : "s"}</div></div>` : ""}
+      ${traceView(d.trace)}
     </div>`;
+}
+
+function wireReview(turnId) {
+  const ta = document.getElementById("editsql");
+  document.querySelectorAll(".review button").forEach(b => {
+    b.onclick = async () => {
+      const act = b.dataset.act;
+      if (act === "modify" && ta.style.display !== "block") { ta.style.display = "block"; ta.focus(); return; }
+      document.querySelectorAll(".review button").forEach(x => x.disabled = true);
+      const body = { turn_id: turnId, decision: act === "modify" ? "modify" : act };
+      if (act === "modify") body.modified_sql = ta.value;
+      try {
+        const d = await (await fetch("/api/review", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+        })).json();
+        render(d);
+      } catch (e) {
+        out.innerHTML = `<div class="result"><div class="banner err">Review failed: ${esc(e.message)}</div></div>`;
+      }
+    };
+  });
 }
 
 async function ask() {
   const question = input.value.trim();
   if (!question) return;
-  btn.disabled = true;
-  btn.textContent = "…";
+  btn.disabled = true; btn.textContent = "…";
   out.innerHTML = `<div class="result"><div class="panel"><div class="label">Running</div>
-    <div class="explanation" style="color:var(--muted)">Generating SQL and querying…</div></div></div>`;
+    <div class="explanation" style="color:var(--muted)">Planning, generating SQL, checking guardrails…</div></div></div>`;
   try {
     const r = await fetch("/api/query", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question }),
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question }),
     });
     if (!r.ok) throw new Error("HTTP " + r.status);
     render(await r.json());
   } catch (e) {
     out.innerHTML = `<div class="result"><div class="banner err">Request failed: ${esc(e.message)}</div></div>`;
   } finally {
-    btn.disabled = false;
-    btn.textContent = "Ask";
+    btn.disabled = false; btn.textContent = "Ask";
   }
 }
 

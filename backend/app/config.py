@@ -20,9 +20,12 @@ class Settings:
     openai_api_key = _get("OPENAI_API_KEY", "")
     openai_model = _get("OPENAI_MODEL", "gpt-4o-mini")
 
-    # Guardrails (wired up in week 2; read here so config is stable across weeks)
-    max_result_rows = int(_get("MAX_RESULT_ROWS", "200"))
-    max_join_tables = int(_get("MAX_JOIN_TABLES", "2"))
+    # Guardrails
+    max_result_rows = int(_get("MAX_RESULT_ROWS", "200"))  # above this a query needs human review
+    max_joins = int(_get("MAX_JOINS", "2"))                # more JOINs than this needs human review
+
+    # Orchestration
+    max_repairs = int(_get("MAX_REPAIRS", "1"))            # auto-retries after a SQL execution error
 
     # Memory / context
     memory_summarize_after_turns = int(_get("MEMORY_SUMMARIZE_AFTER_TURNS", "20"))

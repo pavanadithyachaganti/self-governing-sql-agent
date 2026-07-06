@@ -9,24 +9,41 @@ class QueryRequest(BaseModel):
 
 class QueryResponse(BaseModel):
     question: str
-    sql: str
-    explanation: str
-    columns: List[str]
-    rows: List[List[Any]]
-    row_count: int
+    route: str                       # sql | clarify | chit_chat
+    status: str                      # completed | blocked | needs_approval | rejected | error | clarify | chit_chat
+    needs_approval: bool = False
+    message: str = ""                # clarifying question, chit-chat reply, or guardrail/refusal reason
+    sql: str = ""
+    explanation: str = ""
+    columns: List[str] = []
+    rows: List[List[Any]] = []
+    row_count: int = 0
     error: Optional[str] = None
+    guardrail_decision: Optional[str] = None
+    guardrail_reason: Optional[str] = None
     provider: str
-    total_ms: float
+    trace: List[Dict[str, Any]] = []
+    total_ms: float = 0.0
+    turn_id: Optional[int] = None
+
+
+class ReviewRequest(BaseModel):
+    turn_id: int
+    decision: str                    # approve | reject | modify
+    modified_sql: Optional[str] = None
+    reason: Optional[str] = ""
 
 
 class HistoryTurn(BaseModel):
     id: int
     ts: float
-    session_id: str
+    session_id: Optional[str] = None
     question: str
-    sql: str
+    route: Optional[str] = None
+    sql: Optional[str] = None
     guardrail_decision: Optional[str] = None
     human_approval: Optional[str] = None
+    status: Optional[str] = None
     row_count: Optional[int] = None
     error: Optional[str] = None
 
