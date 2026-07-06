@@ -81,10 +81,10 @@ class AnthropicProvider:
         self.key = settings.anthropic_api_key
 
     def complete(self, system, user, temperature=0.0, json_mode=False):
+        # temperature is deprecated on the latest Claude models, so it is omitted.
         payload = {
             "model": self.model,
             "max_tokens": 1024,
-            "temperature": temperature,
             "system": system,
             "messages": [{"role": "user", "content": user}],
         }
@@ -97,7 +97,12 @@ class AnthropicProvider:
                 "content-type": "application/json",
             },
         )
-        return r.json()["content"][0]["text"]
+        # The response may include non-text blocks (e.g. thinking); take the first text block.
+        blocks = r.json().get("content", [])
+        for block in blocks:
+            if block.get("type") == "text":
+                return block["text"]
+        return ""
 
 
 class OpenAIProvider:
