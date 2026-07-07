@@ -36,6 +36,14 @@ def _conn():
     os.makedirs(os.path.dirname(settings.memory_db_path), exist_ok=True)
     c = sqlite3.connect(settings.memory_db_path)
     _ensure_schema(c)
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS session_summaries(
+            session_id TEXT PRIMARY KEY,
+            summary TEXT,
+            up_to_turn_id INTEGER,
+            updated_ts REAL)"""
+    )
+    c.commit()
     return c
 
 
@@ -172,10 +180,31 @@ def stats():
     }
 
 
-def context_for_prompt(session_id, max_turns=5):
-    """Short recent-history text fed back to the LLM so follow-up questions
-    ('and for last month?') resolve against what was just asked."""
-    turns = [t for t in recent_turns(session_id, limit=max_turns) if t["sql"]][::-1]
-    if not turns:
-        return ""
-    return "\n".join(f"Q: {t['question']}\nSQL: {t['sql']}" for t in turns)
+def session_turns(session_id, limit=500):
+    """All SQL-bearing turns for a session, oldest first — the raw material for
+    conversation context and summarization."""
+    return [t for t in recent_turns(session_id, limit=limit) if t["sql"]][::-1]
+
+
+def get_session_summary(session_id):
+    c = _conn()
+    row = c.execute(
+        "SELECT summary, up_to_turn_id FROM session_summaries WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    c.close()
+    return {"summary": row[0], "up_to_turn_id": row[1]} if row else None
+
+
+def upsert_session_summary(session_id, summary, up_to_turn_id):
+    c = _conn()
+    c.execute(
+        """INSERT INTO session_summaries(session_id, summary, up_to_turn_id, updated_ts)
+           VALUES (?,?,?,?)
+           ON CONFLICT(session_id) DO UPDATE SET
+             summary=excluded.summary, up_to_turn_id=excluded.up_to_turn_id,
+             updated_ts=excluded.updated_ts""",
+        (session_id, summary, up_to_turn_id, time.time()),
+    )
+    c.commit()
+    c.close()

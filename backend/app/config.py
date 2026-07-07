@@ -32,7 +32,8 @@ class Settings:
     summarize_max_rows = int(_get("SUMMARIZE_MAX_ROWS", "40"))  # rows shown to the summarizer
 
     # Memory / context
-    memory_summarize_after_turns = int(_get("MEMORY_SUMMARIZE_AFTER_TURNS", "20"))
+    memory_recent_window = int(_get("MEMORY_RECENT_WINDOW", "6"))  # recent turns kept verbatim
+    # Older turns beyond the window are folded into a running summary.
 
     # CORS
     allowed_origins = _get("ALLOWED_ORIGINS", "*")

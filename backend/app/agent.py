@@ -62,6 +62,15 @@ Return a corrected single read-only SELECT query.
 Respond with strict JSON only, no markdown: {{"sql": "<query>", "explanation": "<one sentence>"}}
 """
 
+MEMORY_SUMMARY_SYSTEM = """STEP=memory_summary
+You maintain a running summary of a data-analysis conversation. Given the
+previous summary (may be empty) and several new earlier turns (each a question
+and the SQL that answered it), produce an updated, compact summary that preserves
+what was asked about and any entities/filters that later questions might refer back
+to. Keep it under 120 words.
+Respond with strict JSON only, no markdown: {"summary": "<updated summary>"}
+"""
+
 SCHEMA_EXPERT_SYSTEM = f"""STEP=schema_expert
 You are a database schema expert. Given a question, identify which tables and
 columns are relevant and any joins needed to answer it. Do not write SQL.
@@ -145,9 +154,43 @@ class SQLAgent:
             f"Policy expert: {policy_advice}" if policy_advice else "",
         ) if x)
 
+    def _summarize_memory(self, prev_summary, new_turns):
+        turns_text = "\n".join(f"Q: {t['question']}\nSQL: {t['sql']}" for t in new_turns)
+        user = f"Previous summary:\n{prev_summary or '(none)'}\n\nNew earlier turns:\n{turns_text}"
+        parsed = complete_json(self.llm, MEMORY_SUMMARY_SYSTEM, user)
+        return (parsed.get("summary") or prev_summary or "").strip()
+
+    def _recall(self, session_id, trace):
+        """Build conversation context. Recent turns are kept verbatim; once a
+        session grows past the window, older turns are folded into a running
+        summary (rebuilt only when new older turns appear, so it isn't redone
+        every request)."""
+        window = settings.memory_recent_window
+        turns = memory.session_turns(session_id)          # oldest first
+        if len(turns) <= window:
+            return "\n".join(f"Q: {t['question']}\nSQL: {t['sql']}" for t in turns)
+
+        older, recent = turns[:-window], turns[-window:]
+        max_older_id = max(t["id"] for t in older)
+        cached = memory.get_session_summary(session_id)
+        if not cached or (cached["up_to_turn_id"] or 0) < max_older_id:
+            with span(trace, "summarize_memory") as m:
+                prev = cached["summary"] if cached else ""
+                cutoff = cached["up_to_turn_id"] if cached else 0
+                new_turns = [t for t in older if t["id"] > (cutoff or 0)]
+                summary = self._summarize_memory(prev, new_turns)
+                memory.upsert_session_summary(session_id, summary, max_older_id)
+                m["detail"] = f"folded {len(new_turns)} older turn(s) into the running summary"
+                m["meta"] = {"older_turns": len(older), "recent_kept": len(recent)}
+        else:
+            summary = cached["summary"]
+
+        recent_text = "\n".join(f"Q: {t['question']}\nSQL: {t['sql']}" for t in recent)
+        return f"Summary of earlier conversation:\n{summary}\n\nRecent turns:\n{recent_text}"
+
     def _generate(self, question, session_id, trace, role="analyst", advice=""):
+        history = self._recall(session_id, trace)
         with span(trace, "generate_sql") as m:
-            history = memory.context_for_prompt(session_id)
             parts = []
             if advice:
                 parts.append(f"Specialist guidance:\n{advice}")
