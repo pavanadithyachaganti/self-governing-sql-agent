@@ -1,23 +1,24 @@
 # Agent Orchestration System
 
-An agent that turns natural language questions into safe, auditable queries over operational data. Framework-free, with SQL guardrails and human-in-the-loop review for anything destructive or ambiguous.
-
-> **Status: ** The multi-step orchestrator, guardrail safety layer, human-in-the-loop review, and per-step trace are working end to end on top of the dataset and memory.
+An agent that turns natural language questions into safe, auditable queries over operational data. Framework-free, with safety and confidentiality guardrails, role-based access, and human-in-the-loop review for anything destructive, disallowed, or ambiguous.
 
 ## What this is
 
-A natural-language interface over a synthetic industrial safety operations database. A question is not blindly turned into SQL and run — it is **orchestrated** through named steps that make decisions: the question is routed, turned into SQL, checked by safety and confidentiality guardrails, held for a human if it looks risky, executed, repaired if it errors, and finally summarized into a grounded answer that is checked for faithfulness. Every step is traced, and every decision is logged. No LangChain, LangGraph, AutoGen, or CrewAI — the orchestrator, guardrails, provider abstraction, and memory are plain Python, same discipline as the self-correcting RAG repo.
+A natural-language interface over a synthetic industrial safety operations database. A question is not blindly turned into SQL and run — it is **orchestrated** through named steps that make decisions: the question is routed, turned into SQL, checked by safety and confidentiality guardrails (which enforce a role-based access policy), held for a human if it looks risky, executed, repaired if it errors, and finally summarized into a grounded answer that is checked for faithfulness. Every step is traced, and every decision is logged. No LangChain, LangGraph, AutoGen, or CrewAI — the orchestrator, guardrails, provider abstraction, and memory are plain Python, same discipline as the self-correcting RAG repo.
 
 ## How the orchestration works
 
 ```
-question
-  → plan            route the question: sql | clarify | chit_chat
+question (+ caller's role)
+  → plan            route the question: sql | restricted | clarify | chit_chat
       ├─ clarify / chit_chat → answer directly, no database access
+      ├─ restricted → refuse early if the role has no access to personal data
       └─ sql
-          → generate      LLM writes a single SELECT (with recent history as context)
-          → guardrail     safety + confidentiality checks + result-size estimate
-              ├─ block   → refuse (destructive, or exposes restricted PII), never runs
+          → council*      (multi-agent mode) a schema expert and a policy expert
+                          are consulted in parallel; their advice guides generation
+          → generate      LLM writes a single SELECT (recent history + running summary as context)
+          → guardrail     safety + role-aware confidentiality checks + result-size estimate
+              ├─ block   → refuse (destructive, or exposes PII the role may not see), never runs
               ├─ review  → PAUSE, hand the SQL to a human (approve / reject / modify)
               └─ allow   → execute
           → execute       run read-only against SQLite
@@ -25,6 +26,7 @@ question
           → summarize     write a grounded natural-language answer from the result rows
           → verify        score the answer's faithfulness against those rows
 ```
+*`council` runs only in multi-agent mode (`AGENT_MODE=multi` or `"mode":"multi"` per request).
 
 There are two confidentiality checkpoints, not one. An **early planner gate** refuses a request for an individual's personal data before any SQL is generated (fast, cheap), and the **deterministic SQL guardrail** is the authoritative backstop that inspects the actual columns a query would touch. The early gate can be fooled by phrasing; the SQL gate cannot, because it reads the real query.
 
@@ -43,6 +45,26 @@ The **guardrail `review` branch is the human-in-the-loop checkpoint.** A flagged
 The three block rules cover three distinct risks: **safety** (don't mutate data), **confidentiality** (don't leak personal data), and injection (one statement only). The confidentiality rule is deterministic — it does not rely on the model choosing to refuse.
 
 **Aggregate vs. row-level PII.** The confidentiality rule is column-aware: a *statistic computed over* a sensitive column is allowed, while any *row-level* exposure of it is blocked. So `SELECT AVG(monthly_salary_aed) ... GROUP BY site_id` runs (no individual's salary is revealed), but `SELECT monthly_salary_aed FROM workers`, a `WHERE monthly_salary_aed > 30000` filter, or grouping by the raw column are all blocked. Filtering or grouping on raw sensitive values is treated conservatively because rare-category counts can re-identify people in small groups.
+
+### Role-based access
+
+The confidentiality rule is not one fixed policy — it depends on the caller's **role**. A column is only "restricted" for roles that aren't permitted to see it, so the same question yields different answers to different people:
+
+| Role | May see at the row level |
+| --- | --- |
+| `analyst` (default) | no personal data |
+| `safety_officer` | `medical_conditions` only |
+| `hr_admin` | all personnel fields |
+
+*"List each worker's salary"* is refused for `analyst`, blocked for `safety_officer` (not their column), and returned for `hr_admin` — enforced by the same deterministic guardrail, just with a role-specific restricted-column set. Roles are a small declarative table (`policy.py`), not an auth stack; the point is to show the guardrail becoming an access-control system. The request carries `role`; the UI has a selector.
+
+### Multi-agent mode
+
+By default the SQL generator works alone. In multi-agent mode (`AGENT_MODE=multi`, or `"mode":"multi"` per request) a supervisor consults two specialists **concurrently** before generation: a **schema expert** (which tables, columns, and joins to use) and a **policy expert** (how to answer within the role's restrictions). Their advice is folded into the generation prompt. The two run in parallel — in practice two calls that sum to ~8s finish in ~4s wall-clock. The specialists *advise*; the deterministic guardrails still *enforce*.
+
+### Memory
+
+Recent turns are kept verbatim so follow-ups ("and for last month?") resolve. Once a session grows past `MEMORY_RECENT_WINDOW` (default 6), older turns are folded into a per-session running summary — rebuilt incrementally (only the newly aged-out turns), not from scratch each request — and fed to the generator alongside the recent turns.
 
 Every decision and every human choice is written to the SQLite memory log, so the conversation history doubles as an audit trail.
 
@@ -124,11 +146,12 @@ backend/
   app/
     config.py     settings from .env (guardrail thresholds, repair budget)
     db.py         SQLite connection, schema description, row-estimate + query runner
-    llm.py        Anthropic / OpenAI / mock provider abstraction (plan, generate, repair)
+    llm.py        Anthropic / OpenAI / mock provider abstraction (plan, generate, repair, experts, summarize)
     guardrails.py named safety + confidentiality rules -> allow | review | block, with reasons
+    policy.py     role -> allowed-PII-columns access policy
     trace.py      per-step timing spans
-    agent.py      the orchestrator: plan -> guardrail -> review -> execute -> repair -> summarize -> verify
-    memory.py     conversation memory + decision log (SQLite); pending-review state machine; stats
+    agent.py      the orchestrator: plan -> council -> guardrail -> review -> execute -> repair -> summarize -> verify
+    memory.py     conversation memory + decision log (SQLite); pending-review state machine; running summaries; stats
     evals.py      guardrail + routing regression suite
     schemas.py    pydantic request/response models
     main.py       FastAPI app and endpoints
@@ -153,9 +176,28 @@ backend/
 | `POST /api/eval` | run the guardrail + routing regression suite, return the scored report |
 | `GET /api/health` | active LLM provider and current guardrail thresholds |
 
+## What's built
+
+- Synthetic operational dataset (four tables, realistic distributions) generated with Faker and persisted to SQLite.
+- Multi-step orchestrator: plan → (council) → generate → guardrail → human review → execute → repair → summarize → verify.
+- Safety + confidentiality guardrails with named rules and reasons: destructive/injection blocks, an aggregate-vs-row-level PII policy, and result-size review, plus an early planner gate.
+- Role-based access — the confidentiality policy varies by caller role.
+- Human-in-the-loop review (approve / reject / modify) feeding a decision log.
+- Multi-agent mode: schema and policy specialists consulted in parallel.
+- Grounded result summarization with a faithfulness check.
+- Conversation memory with running summarization for long sessions.
+- Per-step trace observability, a decision-log dashboard, and a scored regression eval suite.
+- Single-page UI (Ask view + Decision-log dashboard) served by the API.
+
+## Possible next steps
+
+- Deploy free on Render (backend) + Vercel (dashboard).
+- Prompt-injection eval cases; wire the eval + smoke suites into CI.
+- Row-level data scoping (a site manager sees only their own site).
+- Optional trace export (Langfuse / Phoenix).
 
 ## What this demonstrates
 
-Multi-step agent orchestration, a SQL safety and confidentiality layer, human-in-the-loop control flow, execution tracing, provider abstraction, conversation memory as an audit trail, and synthetic dataset generation with realistic distributions — built without a framework doing the thinking.
+Multi-step and multi-agent orchestration, a SQL safety + confidentiality + access-control layer, human-in-the-loop control flow, execution tracing, provider abstraction, conversation memory as an audit trail with summarization, and synthetic dataset generation with realistic distributions — built without a framework doing the thinking.
 
 Built by Pavan Adithya Chaganti · [LinkedIn](https://www.linkedin.com/in/pavan-adithya-chaganti-763840214)
