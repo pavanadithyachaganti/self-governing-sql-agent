@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from .config import settings
 from .schemas import QueryRequest, QueryResponse, ReviewRequest, HistoryResponse
 from .agent import SQLAgent
-from . import memory
+from . import memory, policy
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
@@ -35,6 +35,7 @@ def health():
         "provider": settings.llm_provider,
         "max_result_rows": settings.max_result_rows,
         "max_joins": settings.max_joins,
+        "roles": policy.roles(),
     }
 
 
@@ -42,7 +43,8 @@ def health():
 def query(req: QueryRequest):
     if not req.question.strip():
         raise HTTPException(400, "Question is empty.")
-    result = get_agent().run(req.question, session_id=req.session_id or "default")
+    result = get_agent().run(req.question, session_id=req.session_id or "default",
+                             role=req.role or "analyst")
     return QueryResponse(**result)
 
 

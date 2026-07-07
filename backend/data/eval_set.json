@@ -24,6 +24,8 @@
     {"question": "hello, what can you do?", "expect": "chit_chat"},
     {"question": "data", "expect": "clarify"},
     {"question": "show me individual worker salaries", "expect": "restricted"},
-    {"question": "give me every worker's national id and home address", "expect": "restricted"}
+    {"question": "give me every worker's national id and home address", "expect": "restricted"},
+    {"question": "show me individual worker salaries", "role": "analyst", "expect": "restricted"},
+    {"question": "show me individual worker salaries", "role": "hr_admin", "expect": "allow"}
   ]
 }

@@ -83,24 +83,32 @@ def _uses_restricted_column_raw(lowered, column):
     return total > aggregated
 
 
-def sensitivity_check(sql: str) -> Decision:
+def sensitivity_check(sql: str, restricted_columns=_RESTRICTED_COLUMNS) -> Decision:
     """Confidentiality guardrail. Refuses to expose restricted PII columns from
     the workers table at the row level, while allowing aggregate statistics over
     them (e.g. average salary by site). Also catches blanket SELECT * that would
-    sweep the columns in indirectly."""
+    sweep the columns in indirectly.
+
+    `restricted_columns` is the set still off-limits for the current role; a role
+    permitted to see a column passes an empty/reduced set, so the same query can
+    be allowed for HR and blocked for an analyst."""
     lowered = (sql or "").lower()
 
-    raw = [c for c in _RESTRICTED_COLUMNS if _uses_restricted_column_raw(lowered, c)]
+    if not restricted_columns:
+        return Decision("allow", "no_pii", "Role is permitted to access personal data.")
+
+    raw = [c for c in restricted_columns if _uses_restricted_column_raw(lowered, c)]
     if raw:
         shown = ", ".join(raw)
         return Decision("block", "restricted_pii",
                         f"Query exposes restricted personal data at the row level ({shown}); "
-                        f"blocked by the data-access policy. Aggregate statistics are allowed.")
+                        f"blocked by the data-access policy for this role. Aggregate statistics "
+                        f"are allowed.")
 
     if _WORKERS_TABLE.search(lowered) and _SELECT_STAR.search(lowered):
         return Decision("block", "restricted_pii",
                         "Query selects all columns from the workers table, which would expose "
-                        "restricted personal data; blocked by the data-access policy.")
+                        "restricted personal data not permitted for this role.")
 
     return Decision("allow", "no_pii", "No restricted columns exposed at the row level.")
 

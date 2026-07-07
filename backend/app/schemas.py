@@ -5,6 +5,7 @@ from pydantic import BaseModel
 class QueryRequest(BaseModel):
     question: str
     session_id: Optional[str] = "default"
+    role: Optional[str] = "analyst"
 
 
 class QueryResponse(BaseModel):

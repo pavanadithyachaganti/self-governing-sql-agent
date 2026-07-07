@@ -38,6 +38,9 @@
     border-radius: 10px; padding: 13px 14px; font-size: 15px; font-family: var(--sans); outline: none; }
   input#q:focus { border-color: #39414a; }
   input#q::placeholder { color: var(--faint); }
+  select#role { background: var(--panel); border: 1px solid var(--line); color: var(--text);
+    border-radius: 10px; padding: 0 10px; font-family: var(--mono); font-size: 12.5px; outline: none; cursor: pointer; }
+  select#role:focus { border-color: #39414a; }
   button.send { background: var(--accent); color: #072016; border: none; border-radius: 10px;
     padding: 0 18px; font-weight: 500; font-size: 14px; cursor: pointer; }
   button.send:disabled { opacity: .5; cursor: default; }
@@ -139,6 +142,11 @@
     <p class="sub">Each question is routed, turned into SQL, checked by the guardrails, and — if risky — held for your review before it runs. Every step is traced.</p>
 
     <div class="askrow">
+      <select id="role" title="Access role — changes what personal data you may see">
+        <option value="analyst">analyst</option>
+        <option value="safety_officer">safety_officer</option>
+        <option value="hr_admin">hr_admin</option>
+      </select>
       <input id="q" placeholder="e.g. Which sites had the most critical incidents last month?" autofocus />
       <button class="send" id="send">Ask</button>
     </div>
@@ -322,8 +330,10 @@ async function ask() {
   out.innerHTML = `<div class="result"><div class="panel"><div class="label">Running</div>
     <div class="explanation" style="color:var(--muted)">Planning, generating SQL, checking guardrails…</div></div></div>`;
   try {
+    const role = document.getElementById("role").value;
     const r = await fetch("/api/query", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question }),
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, role }),
     });
     if (!r.ok) throw new Error("HTTP " + r.status);
     render(await r.json());

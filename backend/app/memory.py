@@ -15,6 +15,7 @@ _COLUMNS = {
     "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
     "ts": "REAL",
     "session_id": "TEXT",
+    "role": "TEXT",
     "question": "TEXT",
     "route": "TEXT",
     "generated_sql": "TEXT",
@@ -53,14 +54,14 @@ def _ensure_schema(c):
 def create_turn(session_id, question, route="sql", generated_sql="",
                 guardrail_decision=None, guardrail_reason=None, status="completed",
                 query_result=None, final_answer="", row_count=None, error=None, trace=None,
-                human_approval=None, human_reason=None):
+                human_approval=None, human_reason=None, role="analyst"):
     c = _conn()
     cur = c.execute(
-        """INSERT INTO turns(ts, session_id, question, route, generated_sql,
+        """INSERT INTO turns(ts, session_id, role, question, route, generated_sql,
                guardrail_decision, guardrail_reason, human_approval, human_reason,
                status, query_result, final_answer, row_count, error, trace)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (time.time(), session_id, question, route, generated_sql,
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (time.time(), session_id, role, question, route, generated_sql,
          guardrail_decision, guardrail_reason, human_approval, human_reason,
          status, json.dumps(query_result), final_answer, row_count, error,
          json.dumps(trace) if trace is not None else None),

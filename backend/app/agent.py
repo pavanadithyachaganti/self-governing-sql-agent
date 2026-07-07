@@ -14,7 +14,7 @@ database. A later /api/review call resumes it (approve / reject / modify).
 import json
 from .db import SCHEMA_DESCRIPTION, estimate_rows, run_query
 from .llm import get_llm, complete_json
-from . import memory, guardrails
+from . import memory, guardrails, policy
 from .config import settings
 from .trace import Trace, span
 
@@ -93,29 +93,40 @@ class SQLAgent:
             m["meta"] = {"route": route}
             return route, message
 
-    def _generate(self, question, session_id, trace):
+    def _generate(self, question, session_id, trace, role="analyst"):
         with span(trace, "generate_sql") as m:
             history = memory.context_for_prompt(session_id)
-            user = (f"Recent conversation:\n{history}\n\nNew question: {question}"
-                    if history else question)
+            parts = []
+            if history:
+                parts.append(f"Recent conversation:\n{history}")
+            allowed = policy.ROLE_ALLOWED.get(role, set())
+            if allowed:
+                # Tell the generator the caller is authorized, so it does not
+                # self-censor a query the access policy actually permits.
+                parts.append(f"Authorization: the requester's role '{role}' is permitted to access "
+                             f"these otherwise-restricted columns: {', '.join(sorted(allowed))}. "
+                             f"Write the SQL they asked for; do not refuse on privacy grounds for "
+                             f"these columns.")
+            parts.append(f"New question: {question}" if history else question)
+            user = "\n\n".join(parts)
             parsed = complete_json(self.llm, GENERATE_SYSTEM, user)
             sql = (parsed.get("sql") or "").strip()
             explanation = parsed.get("explanation", "")
             m["detail"] = sql or "(no query produced)"
             return sql, explanation
 
-    def _guardrail(self, sql, trace):
+    def _guardrail(self, sql, trace, role="analyst"):
         with span(trace, "guardrail") as m:
             static = guardrails.static_check(sql, settings.max_joins)
             decision = static
-            meta = {}
+            meta = {"role": role}
             if static.decision != "block":
-                sensitivity = guardrails.sensitivity_check(sql)
+                sensitivity = guardrails.sensitivity_check(sql, policy.restricted_for(role))
                 est = estimate_rows(sql)
                 size = guardrails.size_check(est, settings.max_result_rows, sql)
                 decision = guardrails.combine(static, sensitivity, size)
-                meta = {"row_estimate": est}
-            m["detail"] = f"{decision.decision}: {decision.rule}"
+                meta["row_estimate"] = est
+            m["detail"] = f"{decision.decision}: {decision.rule} (role={role})"
             m["meta"] = {**meta, "decision": decision.decision,
                          "rule": decision.rule, "reason": decision.reason}
             return decision
@@ -218,7 +229,8 @@ class SQLAgent:
 
     # ---- entry points -----------------------------------------------------
 
-    def run(self, question, session_id="default"):
+    def run(self, question, session_id="default", role="analyst"):
+        role = policy.normalize(role)
         trace = Trace()
         route, message = self._plan(question, trace)
 
@@ -227,29 +239,33 @@ class SQLAgent:
             resp = self._response(question, trace, route=route, status=route, message=message)
             resp["turn_id"] = memory.create_turn(
                 session_id, question, route=route, status=route,
-                final_answer=message, trace=trace.to_list())
+                final_answer=message, trace=trace.to_list(), role=role)
             return resp
 
-        # Branch A': early confidentiality gate — refuse before any SQL is generated.
-        # This is a fast first line; the SQL guardrail below is the deterministic backstop.
+        # Branch A': early confidentiality gate. Refuse before any SQL is generated
+        # ONLY when this role has no personal-data access at all; roles that can see
+        # some PII fall through to the role-aware SQL guardrail, which enforces the
+        # exact per-column policy.
         if route == "restricted":
-            reason = message or ("This request asks for restricted personal data, which the "
-                                 "data-access policy does not allow.")
-            with span(trace, "policy_precheck") as m:
-                m["detail"] = "blocked early: restricted-data intent"
-                m["meta"] = {"decision": "block", "rule": "restricted_intent"}
-            guardrail = guardrails.Decision("block", "restricted_intent", reason)
-            resp = self._response(question, trace, route="restricted", status="blocked",
-                                  guardrail=guardrail, message=reason)
-            resp["turn_id"] = memory.create_turn(
-                session_id, question, route="restricted", guardrail_decision="block",
-                guardrail_reason=reason, status="blocked", final_answer=reason,
-                trace=trace.to_list())
-            return resp
+            if not policy.can_see_any_pii(role):
+                reason = message or ("This request asks for restricted personal data, which the "
+                                     f"'{role}' role is not allowed to access.")
+                with span(trace, "policy_precheck") as m:
+                    m["detail"] = f"blocked early: restricted-data intent (role={role})"
+                    m["meta"] = {"decision": "block", "rule": "restricted_intent", "role": role}
+                guardrail = guardrails.Decision("block", "restricted_intent", reason)
+                resp = self._response(question, trace, route="restricted", status="blocked",
+                                      guardrail=guardrail, message=reason)
+                resp["turn_id"] = memory.create_turn(
+                    session_id, question, route="restricted", guardrail_decision="block",
+                    guardrail_reason=reason, status="blocked", final_answer=reason,
+                    trace=trace.to_list(), role=role)
+                return resp
+            route = "sql"  # privileged role: let the SQL guardrail decide per column
 
         # Branch B: needs SQL.
-        sql, explanation = self._generate(question, session_id, trace)
-        guardrail = self._guardrail(sql, trace)
+        sql, explanation = self._generate(question, session_id, trace, role)
+        guardrail = self._guardrail(sql, trace, role)
 
         if guardrail.decision == "block":
             resp = self._response(question, trace, sql=sql, explanation=explanation,
@@ -258,7 +274,7 @@ class SQLAgent:
             resp["turn_id"] = memory.create_turn(
                 session_id, question, route="sql", generated_sql=sql,
                 guardrail_decision="block", guardrail_reason=guardrail.reason,
-                status="blocked", final_answer=explanation, trace=trace.to_list())
+                status="blocked", final_answer=explanation, trace=trace.to_list(), role=role)
             return resp
 
         if guardrail.decision == "review":
@@ -268,7 +284,7 @@ class SQLAgent:
             turn_id = memory.create_turn(
                 session_id, question, route="sql", generated_sql=sql,
                 guardrail_decision="review", guardrail_reason=guardrail.reason,
-                status="needs_approval", final_answer=explanation, trace=trace.to_list())
+                status="needs_approval", final_answer=explanation, trace=trace.to_list(), role=role)
             return self._response(question, trace, sql=sql, explanation=explanation,
                                   guardrail=guardrail, status="needs_approval",
                                   needs_approval=True, message=guardrail.reason, turn_id=turn_id)
@@ -285,7 +301,7 @@ class SQLAgent:
             status="error" if error else "completed",
             query_result={"columns": columns, "rows": rows},
             final_answer=answer or final_expl,
-            row_count=len(rows), error=error, trace=trace.to_list())
+            row_count=len(rows), error=error, trace=trace.to_list(), role=role)
         return self._response(question, trace, sql=final_sql, explanation=final_expl,
                               columns=columns, rows=rows, error=error, guardrail=guardrail,
                               status="error" if error else "completed", turn_id=turn_id,
@@ -302,6 +318,7 @@ class SQLAgent:
 
         question = turn["question"]
         session_id = turn["session_id"]
+        role = policy.normalize(turn.get("role") or "analyst")
         trace = Trace()
         with span(trace, "human_decision") as m:
             m["detail"] = f"{decision}" + (f": {reason}" if reason else "")

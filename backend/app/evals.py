@@ -60,9 +60,10 @@ def run(agent=None):
 
     if agent is not None:
         for c in data.get("flow_cases", []):
-            got = _flow_outcome(agent.run(c["question"], session_id="_eval"))
+            role = c.get("role", "analyst")
+            got = _flow_outcome(agent.run(c["question"], session_id="_eval", role=role))
             flow_results.append({
-                "question": c["question"],
+                "question": c["question"], "role": role,
                 "expected": c["expect"], "got": got, "pass": got == c["expect"],
             })
 
