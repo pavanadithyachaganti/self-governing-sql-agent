@@ -25,6 +25,7 @@ class Settings:
     max_joins = int(_get("MAX_JOINS", "2"))                # more JOINs than this needs human review
 
     # Orchestration
+    agent_mode = _get("AGENT_MODE", "single")              # single | multi (multi = specialist council)
     max_repairs = int(_get("MAX_REPAIRS", "1"))            # auto-retries after a SQL execution error
     summarize_results = _get("SUMMARIZE_RESULTS", "true").lower() == "true"
     faithfulness_threshold = float(_get("FAITHFULNESS_THRESHOLD", "0.7"))

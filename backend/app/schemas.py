@@ -6,6 +6,7 @@ class QueryRequest(BaseModel):
     question: str
     session_id: Optional[str] = "default"
     role: Optional[str] = "analyst"
+    mode: Optional[str] = None        # None -> server default; "single" | "multi"
 
 
 class QueryResponse(BaseModel):

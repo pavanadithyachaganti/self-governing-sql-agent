@@ -36,6 +36,7 @@ def health():
         "max_result_rows": settings.max_result_rows,
         "max_joins": settings.max_joins,
         "roles": policy.roles(),
+        "agent_mode": settings.agent_mode,
     }
 
 
@@ -44,7 +45,7 @@ def query(req: QueryRequest):
     if not req.question.strip():
         raise HTTPException(400, "Question is empty.")
     result = get_agent().run(req.question, session_id=req.session_id or "default",
-                             role=req.role or "analyst")
+                             role=req.role or "analyst", mode=req.mode)
     return QueryResponse(**result)
 
 

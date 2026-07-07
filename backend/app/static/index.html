@@ -49,6 +49,10 @@
   .chip { font-size: 12.5px; color: var(--muted); background: var(--panel); border: 1px solid var(--line);
     border-radius: 999px; padding: 5px 11px; cursor: pointer; }
   .chip:hover { border-color: #39414a; color: var(--text); }
+  .modetoggle { display: flex; align-items: center; gap: 7px; margin-top: 12px; font-family: var(--mono);
+    font-size: 12px; color: var(--muted); cursor: pointer; }
+  .modetoggle span { color: var(--faint); }
+  .modetoggle input { cursor: pointer; }
 
   .result { margin-top: 30px; animation: rise .28s ease both; }
   @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
@@ -151,6 +155,8 @@
       <button class="send" id="send">Ask</button>
     </div>
     <div class="chips" id="chips"></div>
+    <label class="modetoggle"><input type="checkbox" id="multi" /> multi-agent mode
+      <span>(consult a schema expert + policy expert in parallel before generating SQL)</span></label>
 
     <div id="out"></div>
   </div>
@@ -331,9 +337,10 @@ async function ask() {
     <div class="explanation" style="color:var(--muted)">Planning, generating SQL, checking guardrails…</div></div></div>`;
   try {
     const role = document.getElementById("role").value;
+    const mode = document.getElementById("multi").checked ? "multi" : "single";
     const r = await fetch("/api/query", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, role }),
+      body: JSON.stringify({ question, role, mode }),
     });
     if (!r.ok) throw new Error("HTTP " + r.status);
     render(await r.json());

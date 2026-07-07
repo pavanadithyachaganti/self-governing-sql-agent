@@ -80,6 +80,12 @@ class MockProvider:
                 "sql": "SELECT COUNT(*) AS total_incidents FROM safety_incidents;",
                 "explanation": "Mock repair: substituted a safe fallback query.",
             })
+        if "step=schema_expert" in sys_l:
+            return json.dumps({"advice": "[mock] Use the tables relevant to the question; "
+                                         "join workers on worker_id when personnel fields are needed."})
+        if "step=policy_expert" in sys_l:
+            return json.dumps({"advice": "[mock] Avoid selecting restricted columns not permitted "
+                                         "for this role; prefer aggregates over sensitive fields."})
         if "step=summarize" in sys_l:
             return json.dumps({"answer": "[mock] The query returned results — see the table below. "
                                          "Set a real provider for a natural-language summary."})

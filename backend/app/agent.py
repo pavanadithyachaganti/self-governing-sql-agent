@@ -11,12 +11,13 @@ The guardrail 'review' branch is the human-in-the-loop checkpoint: the turn is
 saved as 'needs_approval' and returned to the caller without touching the
 database. A later /api/review call resumes it (approve / reject / modify).
 """
-import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 from .db import SCHEMA_DESCRIPTION, estimate_rows, run_query
 from .llm import get_llm, complete_json
 from . import memory, guardrails, policy
 from .config import settings
-from .trace import Trace, span
+from .trace import Trace, span, Step
 
 PLAN_SYSTEM = f"""STEP=plan
 You are the router for a natural-language interface to a safety operations database.
@@ -61,6 +62,24 @@ Return a corrected single read-only SELECT query.
 Respond with strict JSON only, no markdown: {{"sql": "<query>", "explanation": "<one sentence>"}}
 """
 
+SCHEMA_EXPERT_SYSTEM = f"""STEP=schema_expert
+You are a database schema expert. Given a question, identify which tables and
+columns are relevant and any joins needed to answer it. Do not write SQL.
+
+Schema:
+{SCHEMA_DESCRIPTION}
+
+Respond with strict JSON only, no markdown: {{"advice": "<tables, columns, and joins to use>"}}
+"""
+
+POLICY_EXPERT_SYSTEM = """STEP=policy_expert
+You are a data-access policy expert. Given a question and the requester's role
+and column restrictions, advise how to answer it within policy: which columns to
+avoid, whether to aggregate a sensitive column instead of exposing it row by row,
+or whether it cannot be answered at all. Do not write SQL.
+Respond with strict JSON only, no markdown: {"advice": "<policy guidance>"}
+"""
+
 SUMMARIZE_SYSTEM = """STEP=summarize
 You are given a user's question and the exact rows a SQL query returned.
 Write a concise, direct answer (1-3 sentences) using ONLY numbers and facts present
@@ -93,10 +112,45 @@ class SQLAgent:
             m["meta"] = {"route": route}
             return route, message
 
-    def _generate(self, question, session_id, trace, role="analyst"):
+    def _expert(self, system, user):
+        """One specialist call, timed so the council can report each duration."""
+        t0 = time.perf_counter()
+        parsed = complete_json(self.llm, system, user)
+        return (parsed.get("advice") or "").strip(), round((time.perf_counter() - t0) * 1000, 1)
+
+    def _council(self, question, role, trace):
+        """Multi-agent step: a schema expert and a policy expert are consulted
+        CONCURRENTLY (real parallel I/O via threads); a supervisor folds their
+        advice into the SQL generation prompt. Deterministic guardrails still
+        enforce afterward — the experts advise, they do not decide."""
+        restricted = policy.restricted_for(role)
+        policy_ctx = (f"Requester role: {role}. Columns this role may NOT see at the row level: "
+                      f"{', '.join(restricted) if restricted else 'none (full access)'}.")
+        t0 = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_schema = ex.submit(self._expert, SCHEMA_EXPERT_SYSTEM, f"Question: {question}")
+            f_policy = ex.submit(self._expert, POLICY_EXPERT_SYSTEM,
+                                 f"{policy_ctx}\n\nQuestion: {question}")
+            schema_advice, ms_s = f_schema.result()
+            policy_advice, ms_p = f_policy.result()
+        wall_ms = round((time.perf_counter() - t0) * 1000, 1)
+        # Both ran in parallel: record each with its own duration, noting the
+        # wall-clock time is roughly the slower one, not the sum.
+        trace.steps.append(Step(name="schema_expert", detail=schema_advice[:200] or "(none)",
+                                duration_ms=ms_s, meta={"parallel_group": "council"}))
+        trace.steps.append(Step(name="policy_expert", detail=policy_advice[:200] or "(none)",
+                                duration_ms=ms_p, meta={"parallel_group": "council", "wall_ms": wall_ms}))
+        return "\n".join(x for x in (
+            f"Schema expert: {schema_advice}" if schema_advice else "",
+            f"Policy expert: {policy_advice}" if policy_advice else "",
+        ) if x)
+
+    def _generate(self, question, session_id, trace, role="analyst", advice=""):
         with span(trace, "generate_sql") as m:
             history = memory.context_for_prompt(session_id)
             parts = []
+            if advice:
+                parts.append(f"Specialist guidance:\n{advice}")
             if history:
                 parts.append(f"Recent conversation:\n{history}")
             allowed = policy.ROLE_ALLOWED.get(role, set())
@@ -229,8 +283,9 @@ class SQLAgent:
 
     # ---- entry points -----------------------------------------------------
 
-    def run(self, question, session_id="default", role="analyst"):
+    def run(self, question, session_id="default", role="analyst", mode=None):
         role = policy.normalize(role)
+        mode = mode or settings.agent_mode
         trace = Trace()
         route, message = self._plan(question, trace)
 
@@ -263,8 +318,9 @@ class SQLAgent:
                 return resp
             route = "sql"  # privileged role: let the SQL guardrail decide per column
 
-        # Branch B: needs SQL.
-        sql, explanation = self._generate(question, session_id, trace, role)
+        # Branch B: needs SQL. In multi-agent mode, consult the specialist council first.
+        advice = self._council(question, role, trace) if mode == "multi" else ""
+        sql, explanation = self._generate(question, session_id, trace, role, advice)
         guardrail = self._guardrail(sql, trace, role)
 
         if guardrail.decision == "block":
