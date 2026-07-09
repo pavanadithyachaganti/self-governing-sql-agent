@@ -1,14 +1,3 @@
----
-title: Self-Governing SQL Agent
-emoji: 🛡️
-colorFrom: green
-colorTo: gray
-sdk: docker
-app_port: 8000
-pinned: false
-license: mit
----
-
 # Agent Orchestration System
 
 An agent that turns natural language questions into safe, auditable queries over operational data. Framework-free, with safety and confidentiality guardrails, role-based access, and human-in-the-loop review for anything destructive, disallowed, or ambiguous.
@@ -224,7 +213,7 @@ backend/
 
 ## Deploy
 
-The whole app is a single container — the FastAPI backend serves the API and the UI, and the dataset is baked in at build time — so it deploys from the repo's `Dockerfile` as one service. Step-by-step for a free Hugging Face Space is in [DEPLOY.md](DEPLOY.md) (the same image also runs on Render / Koyeb / Fly). It runs keyless in `mock` mode; set `LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` for real answers.
+The whole app is a single container — the FastAPI backend serves the API and the UI, and the dataset is baked in at build time — so it deploys from the repo's `Dockerfile` as one service. Step-by-step for a free Render web service is in [DEPLOY.md](DEPLOY.md) (a `render.yaml` blueprint is included; the same image also runs on Koyeb / Fly / a Hugging Face Docker Space). It runs keyless in `mock` mode; set `LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` for real answers.
 
 ```bash
 # build and run locally with Docker

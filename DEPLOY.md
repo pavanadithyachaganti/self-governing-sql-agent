@@ -1,70 +1,51 @@
-# Deploying on Hugging Face Spaces (free)
+# Deploying free on Render
 
 The whole app is a single container: the FastAPI backend serves the API **and**
-the UI, and the synthetic dataset is baked into the image at build time. Hugging
-Face Spaces builds the repo's `Dockerfile` directly and runs it — free, no credit
-card, HTTPS included.
-
-The Space config lives in the YAML block at the top of `README.md`
-(`sdk: docker`, `app_port: 8000`). Hugging Face requires that block; it's
-harmless on GitHub.
+the UI, and the synthetic dataset is baked into the image at build time. Render
+builds the repo's `Dockerfile` and runs it as one **free web service** — no
+credit card, HTTPS included.
 
 ## Steps
 
-1. **Create a free Hugging Face account** at https://huggingface.co and a
-   **write access token** (Settings → Access Tokens → New token, role *write*).
+1. **Sign in** at https://render.com with your GitHub account (free; no card).
 
-2. **Create a Space:** https://huggingface.co/new-space
-   - Owner: your account
-   - Space name: e.g. `self-governing-sql-agent`
-   - License: MIT
-   - **Space SDK: Docker** → **Blank** template
-   - Hardware: **CPU basic** (free)
+2. **Create the service** — two ways:
+   - **Blueprint (one click):** New → **Blueprint** → pick this repo. Render reads
+     [`render.yaml`](render.yaml) and creates the service preconfigured.
+   - **Manual:** New → **Web Service** → this repo → **Language: Docker**. Render
+     auto-detects the `Dockerfile`. Instance type **Free**.
 
-3. **Push this repo to the Space.** A Space is its own git repo. From a clone of
-   this project:
+3. **Environment variables** (Settings → Environment). Optional — it runs keyless
+   in `mock` mode by default:
 
-   ```bash
-   git remote add space https://huggingface.co/spaces/<your-username>/self-governing-sql-agent
-   git push space main
-   ```
-
-   When prompted, use your Hugging Face username and the **write token** as the
-   password. Hugging Face reads the config from `README.md`, builds the
-   `Dockerfile`, and starts the container.
-
-   (Already have this repo cloned from GitHub? Just add the `space` remote
-   alongside `origin` and push.)
-
-4. **Add your API key as a secret** (for real answers; skip for a keyless `mock`
-   demo). In the Space: **Settings → Variables and secrets**:
-
-   | Type | Name | Value |
+   | Key | Value | Notes |
    | --- | --- | --- |
-   | Secret | `ANTHROPIC_API_KEY` | `sk-ant-…` |
-   | Variable | `LLM_PROVIDER` | `anthropic` |
+   | `LLM_PROVIDER` | `anthropic` | switch from `mock` for real answers |
+   | `ANTHROPIC_API_KEY` | `sk-ant-…` | add the value here, never in git |
+   | `AGENT_MODE` | `multi` | optional: default to the specialist council |
 
-   Optional variables: `ANTHROPIC_MODEL`, `MAX_RESULT_ROWS`, `AGENT_MODE=multi`.
-   The Space restarts and picks them up.
+   If `LLM_PROVIDER=anthropic` but no key is set, the app safely falls back to
+   `mock`, so a keyless deploy still works.
 
-5. **Open it.** Your app is live at
-   `https://<your-username>-self-governing-sql-agent.hf.space` — the Ask view at
-   `/`, the API docs at `/docs`.
+4. **Deploy.** Render builds the image (which runs `generate_data.py`), starts
+   the container on its injected `$PORT` (the `Dockerfile` honors it), and gives
+   you an HTTPS URL like `https://self-governing-sql-agent.onrender.com`. The Ask
+   view is at `/`, the API docs at `/docs`. The health check hits `/api/health`.
 
 ## Notes
 
-- **Free CPU basic** gives 2 vCPU / 16 GB RAM — plenty (no torch, no local
-  models). The Space sleeps after ~48 h of inactivity and wakes on the next
-  visit.
-- **Secrets stay secret.** The API key lives in Space secrets, never in the
-  repo. `.env` and the databases are gitignored.
-- **Memory / decision log** is written to `/app/.data` inside the container
-  (world-writable in the Dockerfile so it works under Hugging Face's non-root
-  runtime). It resets when the Space rebuilds — fine for a demo.
-- **Redeploys** happen automatically on every push to the Space's `main`.
+- **Free instances sleep** after ~15 minutes of inactivity and cold-start
+  (~50 s) on the next request. Fine for a demo; upgrade the instance for
+  always-on.
+- **Secrets stay secret** — the API key lives in Render's environment, never in
+  the repo. `.env` and the databases are gitignored.
+- **Memory / decision log** is written to `/app/.data` inside the container and
+  resets on redeploy — fine for a demo.
+- **Auto-deploy** on every push to `main` is on by default.
 
 ## Same image, other hosts
 
 The `Dockerfile` is platform-agnostic and honors `$PORT`, so the same image also
-deploys as one service on Render, Koyeb, or Fly.io if you ever want an
-always-on host.
+deploys as one service on **Koyeb** (free, always-on) or **Fly.io** (needs a
+card), and on a **Hugging Face Docker Space** where that's available on your
+account.
