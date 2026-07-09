@@ -1,0 +1,15 @@
+# Keep the build context small and reproducible.
+**/__pycache__/
+**/*.pyc
+backend/.venv/
+backend/.data/
+backend/data/*.db
+*.pkl
+.git/
+.github/
+docs/
+node_modules/
+.next/
+.DS_Store
+.env
+backend/.env

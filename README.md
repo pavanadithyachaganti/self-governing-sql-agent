@@ -211,9 +211,19 @@ backend/
 - Per-step trace observability, a decision-log dashboard, and a scored regression eval suite.
 - Single-page UI (Ask view + Decision-log dashboard) served by the API.
 
+## Deploy
+
+The whole app is a single container — the FastAPI backend serves the API and the UI, and the dataset is baked in at build time — so it deploys from the repo's `Dockerfile` as one service. Step-by-step for Coolify is in [DEPLOY.md](DEPLOY.md). It runs keyless in `mock` mode; set `LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` for real answers.
+
+```bash
+# build and run locally with Docker
+docker build -t self-governing-sql-agent .
+docker run -p 8000:8000 -e LLM_PROVIDER=mock self-governing-sql-agent
+# open http://localhost:8000
+```
+
 ## Possible next steps
 
-- Deploy free on Render (backend) + Vercel (dashboard).
 - Prompt-injection eval cases; wire the eval + smoke suites into CI.
 - Row-level data scoping (a site manager sees only their own site).
 - Optional trace export (Langfuse / Phoenix).
