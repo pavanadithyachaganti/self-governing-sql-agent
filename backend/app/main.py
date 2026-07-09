@@ -65,6 +65,28 @@ def history(session_id: Optional[str] = None, limit: int = 20):
     return HistoryResponse(turns=memory.recent_turns(session_id, limit))
 
 
+@app.get("/api/schema")
+def schema():
+    """The operational database's shape, for the UI's context sidebar so users
+    know what they can ask about. Restricted columns are flagged."""
+    from .db import get_connection
+    restricted = set(policy.ALL_RESTRICTED)
+    conn = get_connection()
+    names = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+    tables = []
+    for t in names:  # names come from sqlite_master, not user input
+        cols = [{"name": row[1], "type": row[2], "restricted": row[1] in restricted}
+                for row in conn.execute(f"PRAGMA table_info({t})")]
+        try:
+            rows = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+        except Exception:
+            rows = None
+        tables.append({"name": t, "rows": rows, "columns": cols})
+    conn.close()
+    return {"tables": tables, "restricted": sorted(restricted)}
+
+
 @app.get("/api/stats")
 def stats():
     return memory.stats()
