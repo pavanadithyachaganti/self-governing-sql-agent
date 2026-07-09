@@ -1,61 +1,70 @@
-# Deploying with Coolify
+# Deploying on Hugging Face Spaces (free)
 
 The whole app is a single container: the FastAPI backend serves the API **and**
-the UI, and the synthetic dataset is baked into the image at build time. So a
-deploy is one service pointed at this repo's `Dockerfile` — no separate frontend
-host, no database to provision.
+the UI, and the synthetic dataset is baked into the image at build time. Hugging
+Face Spaces builds the repo's `Dockerfile` directly and runs it — free, no credit
+card, HTTPS included.
 
-## Prerequisites
-
-1. A server running [Coolify](https://coolify.io) (self-hosted on any VPS via its
-   install script), or a Coolify Cloud instance.
-2. This GitHub repo connected to Coolify — either as a **Public Repository**
-   (paste the URL) or a **Private Repository** via the Coolify GitHub App.
-3. Optional, for real answers: an `ANTHROPIC_API_KEY`
-   (https://console.anthropic.com) or `OPENAI_API_KEY`. With no key the app runs
-   in `mock` mode — the full pipeline works, SQL just comes from keyword rules.
+The Space config lives in the YAML block at the top of `README.md`
+(`sdk: docker`, `app_port: 8000`). Hugging Face requires that block; it's
+harmless on GitHub.
 
 ## Steps
 
-1. **New resource.** In your Coolify project/environment: **+ New** →
-   **Public Repository** (or Private via the GitHub App) → paste
-   `https://github.com/pavanadithyachaganti/self-governing-sql-agent`.
-2. **Build pack: Dockerfile.** Coolify auto-detects the `Dockerfile` at the repo
-   root. Leave the base directory as `/`.
-3. **Port.** Set the exposed port to **8000** (matches `EXPOSE 8000`).
-4. **Environment variables** (Settings → Environment Variables):
+1. **Create a free Hugging Face account** at https://huggingface.co and a
+   **write access token** (Settings → Access Tokens → New token, role *write*).
 
-   | Key | Value | Notes |
+2. **Create a Space:** https://huggingface.co/new-space
+   - Owner: your account
+   - Space name: e.g. `self-governing-sql-agent`
+   - License: MIT
+   - **Space SDK: Docker** → **Blank** template
+   - Hardware: **CPU basic** (free)
+
+3. **Push this repo to the Space.** A Space is its own git repo. From a clone of
+   this project:
+
+   ```bash
+   git remote add space https://huggingface.co/spaces/<your-username>/self-governing-sql-agent
+   git push space main
+   ```
+
+   When prompted, use your Hugging Face username and the **write token** as the
+   password. Hugging Face reads the config from `README.md`, builds the
+   `Dockerfile`, and starts the container.
+
+   (Already have this repo cloned from GitHub? Just add the `space` remote
+   alongside `origin` and push.)
+
+4. **Add your API key as a secret** (for real answers; skip for a keyless `mock`
+   demo). In the Space: **Settings → Variables and secrets**:
+
+   | Type | Name | Value |
    | --- | --- | --- |
-   | `LLM_PROVIDER` | `anthropic` | or `openai`, or leave `mock` for a keyless demo |
-   | `ANTHROPIC_API_KEY` | `sk-ant-…` | mark as a secret; only needed for real answers |
-   | `ANTHROPIC_MODEL` | `claude-sonnet-5` | optional override |
-   | `MAX_RESULT_ROWS` | `200` | optional guardrail tuning |
-   | `AGENT_MODE` | `single` | set `multi` to default to the specialist council |
+   | Secret | `ANTHROPIC_API_KEY` | `sk-ant-…` |
+   | Variable | `LLM_PROVIDER` | `anthropic` |
 
-5. **Health check (optional).** Point Coolify's health check at `GET /api/health`.
-6. **Deploy.** Coolify builds the image (which runs `generate_data.py`), starts
-   the container, and — via its built-in proxy — gives you an HTTPS URL with a
-   Let's Encrypt certificate. Add your own domain under **Domains** if you like.
+   Optional variables: `ANTHROPIC_MODEL`, `MAX_RESULT_ROWS`, `AGENT_MODE=multi`.
+   The Space restarts and picks them up.
 
-Open the URL: the Ask view is at `/`, and the OpenAPI docs at `/docs`.
+5. **Open it.** Your app is live at
+   `https://<your-username>-self-governing-sql-agent.hf.space` — the Ask view at
+   `/`, the API docs at `/docs`.
 
-## Persistence (optional)
+## Notes
 
-The conversation memory / decision log is written to `/app/.data/memory.db`
-inside the container, so it resets on each redeploy. To keep the audit trail
-across deploys, add a **Persistent Storage** volume in Coolify mounted at
-`/app/.data`. The dataset itself (`/app/data/operations.db`) is baked into the
-image and needs no volume.
+- **Free CPU basic** gives 2 vCPU / 16 GB RAM — plenty (no torch, no local
+  models). The Space sleeps after ~48 h of inactivity and wakes on the next
+  visit.
+- **Secrets stay secret.** The API key lives in Space secrets, never in the
+  repo. `.env` and the databases are gitignored.
+- **Memory / decision log** is written to `/app/.data` inside the container
+  (world-writable in the Dockerfile so it works under Hugging Face's non-root
+  runtime). It resets when the Space rebuilds — fine for a demo.
+- **Redeploys** happen automatically on every push to the Space's `main`.
 
-## Resources
+## Same image, other hosts
 
-No torch, no local models — the image is small and runs comfortably on a
-256–512 MB instance. Each query makes a few short LLM API calls when a real
-provider is configured.
-
-## Redeploying
-
-Coolify can auto-deploy on push (enable the webhook), or hit **Redeploy** in the
-dashboard. Because the dataset is regenerated during the build, a redeploy also
-refreshes it (with the fixed seed, so it's identical).
+The `Dockerfile` is platform-agnostic and honors `$PORT`, so the same image also
+deploys as one service on Render, Koyeb, or Fly.io if you ever want an
+always-on host.

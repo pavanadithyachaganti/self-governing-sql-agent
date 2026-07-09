@@ -13,6 +13,11 @@ COPY backend/ .
 # and needs no writable data volume to answer queries.
 RUN python scripts/generate_data.py
 
+# The conversation memory / decision log is written here at runtime. Make it
+# world-writable so it works whether the platform runs the container as root or
+# as a non-root user (e.g. Hugging Face Spaces).
+RUN mkdir -p /app/.data && chmod 777 /app/.data
+
 # Runs with LLM_PROVIDER=mock out of the box (no key needed). Set
 # LLM_PROVIDER=anthropic + ANTHROPIC_API_KEY (or the OpenAI equivalents) for
 # real SQL generation. PORT is honored if the platform injects one.
