@@ -2,6 +2,28 @@
 
 An agent that turns natural language questions into safe, auditable queries over operational data. Framework-free, with safety and confidentiality guardrails, role-based access, and human-in-the-loop review for anything destructive, disallowed, or ambiguous.
 
+## Screenshots
+
+Ask a question — get a grounded answer, the generated SQL, the results, and a full step-by-step trace with per-step timings:
+
+<img src="docs/screenshots/01-answer-and-trace.png" width="760" alt="A question answered: grounded answer with a faithfulness score, the ALLOW'd SQL, the results table, and the plan→generate→guardrail→execute→summarize→verify trace">
+
+**Confidentiality + role-based access.** The same request for personal data is refused for an `analyst` before any SQL is generated (left), but returned for an authorized `hr_admin` (right) — enforced by the same deterministic guardrail:
+
+<img src="docs/screenshots/02-pii-blocked.png" width="380" alt="Analyst asking for national IDs and salaries is blocked before SQL is generated"> <img src="docs/screenshots/03-role-based-access.png" width="380" alt="hr_admin asking for salaries is allowed and answered">
+
+**Human-in-the-loop.** A query that would return thousands of rows is held for review — approve, edit the SQL, or reject — before it touches the database:
+
+<img src="docs/screenshots/04-human-review.png" width="760" alt="Human review panel: reason, the SQL, and approve / edit / reject buttons; trace ends at await_human">
+
+**Multi-agent mode.** A schema expert and a policy expert are consulted in parallel before generation (their advice appears in the trace):
+
+<img src="docs/screenshots/05-multi-agent-trace.png" width="760" alt="Trace showing schema_expert and policy_expert steps before generate_sql">
+
+**Decision-log dashboard.** Every guardrail and human decision, as an audit trail:
+
+<img src="docs/screenshots/06-decision-log.png" width="760" alt="Dashboard with totals, guardrail-decision and route breakdowns, and a recent-decisions table">
+
 ## What this is
 
 A natural-language interface over a synthetic industrial safety operations database. A question is not blindly turned into SQL and run — it is **orchestrated** through named steps that make decisions: the question is routed, turned into SQL, checked by safety and confidentiality guardrails (which enforce a role-based access policy), held for a human if it looks risky, executed, repaired if it errors, and finally summarized into a grounded answer that is checked for faithfulness. Every step is traced, and every decision is logged. No LangChain, LangGraph, AutoGen, or CrewAI — the orchestrator, guardrails, provider abstraction, and memory are plain Python, same discipline as the self-correcting RAG repo.
