@@ -2,6 +2,8 @@
 
 An agent that turns natural language questions into safe, auditable queries over operational data. Framework-free, with safety and confidentiality guardrails, role-based access, and human-in-the-loop review for anything destructive, disallowed, or ambiguous.
 
+**▶ Live demo: https://self-governing-sql-agent.onrender.com** — on Render's free tier, so the first request may take ~50 s to wake the instance.
+
 ## Screenshots
 
 Ask a question — get a grounded answer, the generated SQL, the results, and a full step-by-step trace with per-step timings:
