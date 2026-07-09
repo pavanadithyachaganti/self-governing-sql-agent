@@ -1,4 +1,4 @@
-# Agent Orchestration System
+# Self Governing SQL Agent
 
 An agent that turns natural language questions into safe, auditable queries over operational data. Framework-free, with safety and confidentiality guardrails, role-based access, and human-in-the-loop review for anything destructive, disallowed, or ambiguous.
 
